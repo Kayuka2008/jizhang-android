@@ -215,4 +215,30 @@
     <color name="pal_clay_inverse_on_surface">#FF392E2B</color>
     <color name="pal_clay_ripple">#33FFB59E</color>
 
+    <!-- HyperOS 深色：背景近黑、卡片深灰、强调蓝保持不变（更亮一点）。 -->
+    <color name="pal_hyper_surface">#FF000000</color>
+    <color name="pal_hyper_on_surface">#FFFFFFFF</color>
+    <color name="pal_hyper_surface_variant">#FF2C2C2E</color>
+    <color name="pal_hyper_on_surface_variant">#FF8E8E93</color>
+    <color name="pal_hyper_surface_lowest">#FF1C1C1E</color>
+    <color name="pal_hyper_surface_low">#FF252527</color>
+    <color name="pal_hyper_surface_container">#FF2C2C2E</color>
+    <color name="pal_hyper_surface_high">#FF363638</color>
+    <color name="pal_hyper_surface_highest">#FF3A3A3C</color>
+    <color name="pal_hyper_surface_dim">#FF141415</color>
+    <color name="pal_hyper_surface_bright">#FF3A3A3C</color>
+    <color name="pal_hyper_primary">#FF5AC8FA</color>
+    <color name="pal_hyper_on_primary">#FF000000</color>
+    <color name="pal_hyper_primary_container">#FF1F3A52</color>
+    <color name="pal_hyper_on_primary_container">#FFBBE5FF</color>
+    <color name="pal_hyper_secondary">#FF8E8E93</color>
+    <color name="pal_hyper_on_secondary">#FFFFFFFF</color>
+    <color name="pal_hyper_secondary_container">#FF3A3A3C</color>
+    <color name="pal_hyper_on_secondary_container">#FFE5E5EA</color>
+    <color name="pal_hyper_outline">#FF48484A</color>
+    <color name="pal_hyper_outline_variant">#FF2C2C2E</color>
+    <color name="pal_hyper_inverse_surface">#FFF2F2F7</color>
+    <color name="pal_hyper_inverse_on_surface">#FF000000</color>
+    <color name="pal_hyper_ripple">#335AC8FA</color>
+
 </resources>

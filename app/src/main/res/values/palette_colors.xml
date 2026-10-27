@@ -216,4 +216,34 @@
     <color name="pal_clay_inverse_on_surface">#FFFFEDE8</color>
     <color name="pal_clay_ripple">#1F8F4C38</color>
 
+    <!--
+        HyperOS：灰白页面 + 纯白卡片 + 蓝色强调。
+        从 SleepDown 课程表设置页截图取色：背景约 #F2F3F7，卡片纯白，
+        标题黑、次级文字 #8A8A8A，标签/选中态用蓝。
+    -->
+    <color name="pal_hyper_surface">#FFF2F3F7</color>
+    <color name="pal_hyper_on_surface">#FF000000</color>
+    <color name="pal_hyper_surface_variant">#FFE5E7EB</color>
+    <color name="pal_hyper_on_surface_variant">#FF8A8A8A</color>
+    <color name="pal_hyper_surface_lowest">#FFFFFFFF</color>
+    <color name="pal_hyper_surface_low">#FFF2F3F7</color>
+    <color name="pal_hyper_surface_container">#FFEFF1F5</color>
+    <color name="pal_hyper_surface_high">#FFE8EAEE</color>
+    <color name="pal_hyper_surface_highest">#FFE1E3E7</color>
+    <color name="pal_hyper_surface_dim">#FFDCE0E5</color>
+    <color name="pal_hyper_surface_bright">#FFFFFFFF</color>
+    <color name="pal_hyper_primary">#FF3B8CFF</color>
+    <color name="pal_hyper_on_primary">#FFFFFFFF</color>
+    <color name="pal_hyper_primary_container">#FFDCEEFF</color>
+    <color name="pal_hyper_on_primary_container">#FF003366</color>
+    <color name="pal_hyper_secondary">#FF5F6B7A</color>
+    <color name="pal_hyper_on_secondary">#FFFFFFFF</color>
+    <color name="pal_hyper_secondary_container">#FFE4E7EB</color>
+    <color name="pal_hyper_on_secondary_container">#FF1A1F25</color>
+    <color name="pal_hyper_outline">#FFC2C7D0</color>
+    <color name="pal_hyper_outline_variant">#FFE5E7EB</color>
+    <color name="pal_hyper_inverse_surface">#FF1C1C1E</color>
+    <color name="pal_hyper_inverse_on_surface">#FFF2F2F7</color>
+    <color name="pal_hyper_ripple">#1F3B8CFF</color>
+
 </resources>

@@ -4,22 +4,17 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.lifecycleScope
-import androidx.recyclerview.widget.DiffUtil
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.ListAdapter
-import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
-import com.google.android.material.textfield.TextInputLayout
+import androidx.activity.result.contract.ActivityResultContracts
+import com.jizhang.app.ui.common.JizhangDialogHost
+import com.jizhang.app.ui.common.JizhangDialogHostView
+import com.jizhang.app.ui.common.JizhangSnackbarHost
+import com.jizhang.app.ui.common.JizhangSnackbarHostView
+import com.jizhang.app.ui.common.secondaryComposeRoot
 import com.jizhang.app.R
 import com.jizhang.app.data.db.entity.TxKind
-import com.jizhang.app.databinding.ActivityImportBinding
-import com.jizhang.app.databinding.ItemImportPreviewBinding
 import com.jizhang.app.importbill.BillReader
 import com.jizhang.app.importbill.ColumnMapping
 import com.jizhang.app.importbill.ImportCandidate
@@ -31,17 +26,29 @@ import com.jizhang.app.importbill.WeChatBillParser
 import com.jizhang.app.importbill.WrongPasswordException
 import com.jizhang.app.money.Money
 import com.jizhang.app.ui.common.appContainer
-import com.jizhang.app.ui.common.snack
 import com.jizhang.app.util.Dates
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.format.DateTimeFormatter
 
-/** 导入微信账单：选文件 → 解析 → 预览 → 写入。 */
-class ImportActivity : com.jizhang.app.ui.common.ThemedActivity() {
+/**
+ * 导入微信账单：选文件 → 解析 → 预览 → 写入。
+ *
+ * v1.53：视图层改成 Compose + miuix（原 activity_import.xml / item_import_preview.xml /
+ * 内嵌 PreviewAdapter 全删）。Activity 仍是**宿主 + 业务**：文件选择、读字节、
+ * 密码弹窗、列映射弹窗、预览计算、写库、snackbar 全部留在原处；
+ * Compose 侧只拿到「当前步骤 + 汇总 + 行列表 + 两个回调」。
+ *
+ * ★ 三步状态机（pick/preview/loading）改用 [ImportStep] 枚举表达互斥，
+ *   不再靠三个 View 的 visibility 手动对齐。
+ * ★ 系统栏高度订阅后推进 state（绝不在组合体里现读，见 v1.45 的坑）。
+ */
+class ImportActivity : com.jizhang.app.ui.common.SecondaryActivity() {
 
-    private lateinit var binding: ActivityImportBinding
+    private val step = mutableStateOf(ImportStep.PICK)
+    private val summary = mutableStateOf<ImportSummary?>(null)
+    private val rows = mutableStateOf<List<ImportPreviewRow>>(emptyList())
 
     private val useCase by lazy {
         ImportUseCase(
@@ -51,9 +58,14 @@ class ImportActivity : com.jizhang.app.ui.common.ThemedActivity() {
         )
     }
 
-    private lateinit var adapter: PreviewAdapter
     private var preview: ImportPreview? = null
     private var parsedText: String? = null
+
+    /** 统一对话框宿主（v1.56）。 */
+    private val dialogs = JizhangDialogHost()
+
+    /** 统一提示条宿主（v1.60）。 */
+    private val snackbar = JizhangSnackbarHost()
 
     private val pickFile =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -64,16 +76,20 @@ class ImportActivity : com.jizhang.app.ui.common.ThemedActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityImportBinding.inflate(layoutInflater)
-        setContentView(binding.root)
 
-        binding.toolbar.setNavigationOnClickListener { finish() }
-        binding.pickButton.setOnClickListener { launchPicker() }
-        binding.importButton.setOnClickListener { commit() }
-
-        adapter = PreviewAdapter()
-        binding.list.layoutManager = LinearLayoutManager(this)
-        binding.list.adapter = adapter
+        val root = secondaryComposeRoot {
+                ImportScreen(
+                    step = step.value,
+                    summary = summary.value,
+                    rows = rows.value,
+                    onBack = { finish() },
+                    onPickFile = { launchPicker() },
+                    onCommit = { commit() },
+                )
+                JizhangDialogHostView(dialogs)
+                JizhangSnackbarHostView(snackbar)
+        }
+        setContentView(root)
     }
 
     private fun launchPicker() {
@@ -96,14 +112,14 @@ class ImportActivity : com.jizhang.app.ui.common.ThemedActivity() {
     }
 
     private fun readAndParse(uri: Uri) {
-        showStep(binding.loadingStep)
+        step.value = ImportStep.LOADING
         lifecycleScope.launch {
             val bytes = withContext(Dispatchers.IO) {
                 runCatching { contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
             }
             if (bytes == null) {
-                showStep(binding.pickStep)
-                binding.root.snack(getString(R.string.import_parse_failed, "无法读取文件"))
+                step.value = ImportStep.PICK
+                snack(getString(R.string.import_parse_failed, "无法读取文件"))
                 return@launch
             }
             parse(bytes, queryFileName(uri), password = null)
@@ -122,7 +138,7 @@ class ImportActivity : com.jizhang.app.ui.common.ThemedActivity() {
     }
 
     private fun parse(bytes: ByteArray, name: String, password: String?) {
-        showStep(binding.loadingStep)
+        step.value = ImportStep.LOADING
         lifecycleScope.launch {
             val outcome = withContext(Dispatchers.IO) {
                 runCatching {
@@ -135,17 +151,17 @@ class ImportActivity : com.jizhang.app.ui.common.ThemedActivity() {
             outcome.fold(
                 onSuccess = { result ->
                     if (result.rows.isEmpty() && result.mapping == null) {
-                        showStep(binding.pickStep)
+                        step.value = ImportStep.PICK
                         if (result.headerFields.isEmpty()) {
-                            binding.root.snack(getString(R.string.import_bad_format))
+                            snack(getString(R.string.import_bad_format))
                         } else {
                             askColumnMapping(result.headerFields)
                         }
                         return@fold
                     }
                     if (result.rows.isEmpty()) {
-                        showStep(binding.pickStep)
-                        binding.root.snack(getString(R.string.import_preview_empty))
+                        step.value = ImportStep.PICK
+                        snack(getString(R.string.import_preview_empty))
                         return@fold
                     }
                     buildPreview(result)
@@ -154,15 +170,13 @@ class ImportActivity : com.jizhang.app.ui.common.ThemedActivity() {
                     when (e) {
                         is PasswordRequiredException -> askPassword(bytes, name)
                         is WrongPasswordException -> {
-                            showStep(binding.pickStep)
-                            binding.root.snack(getString(R.string.import_password_wrong))
+                            step.value = ImportStep.PICK
+                            snack(getString(R.string.import_password_wrong))
                         }
 
                         else -> {
-                            showStep(binding.pickStep)
-                            binding.root.snack(
-                                getString(R.string.import_parse_failed, e.message.orEmpty()),
-                            )
+                            step.value = ImportStep.PICK
+                            snack(getString(R.string.import_parse_failed, e.message.orEmpty()))
                         }
                     }
                 },
@@ -171,27 +185,19 @@ class ImportActivity : com.jizhang.app.ui.common.ThemedActivity() {
     }
 
     private fun askPassword(bytes: ByteArray, name: String) {
-        showStep(binding.pickStep)
-        val layout = TextInputLayout(this).apply {
-            hint = getString(R.string.import_password_hint)
-            setPadding(48, 24, 48, 0)
+        step.value = ImportStep.PICK
+        // 旧版是 setCancelable(false)：密码没给就没法继续，点外部不关闭。
+        dialogs.input(
+            title = getString(R.string.import_password_title),
+            message = getString(R.string.import_help),
+            initial = "",
+            confirmText = getString(R.string.action_confirm),
+            cancelText = getString(R.string.action_cancel),
+            numeric = true,
+            cancelable = false,
+        ) { password ->
+            parse(bytes, name, password.trim())
         }
-        val input = TextInputEditText(this).apply {
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER
-            maxLines = 1
-        }
-        layout.addView(input)
-
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.import_password_title)
-            .setMessage(R.string.import_help)
-            .setView(layout)
-            .setPositiveButton(R.string.action_confirm) { _, _ ->
-                parse(bytes, name, input.text?.toString()?.trim())
-            }
-            .setNegativeButton(R.string.action_cancel, null)
-            .setCancelable(false)
-            .show()
     }
 
     /**
@@ -211,7 +217,7 @@ class ImportActivity : com.jizhang.app.ui.common.ThemedActivity() {
         fun askFor(position: Int) {
             if (position >= labels.size) {
                 if (indices[0] == ColumnMapping.NONE || indices[1] == ColumnMapping.NONE) {
-                    binding.root.snack(getString(R.string.import_bad_format))
+                    snack(getString(R.string.import_bad_format))
                     return
                 }
                 val mapping = ColumnMapping(
@@ -229,35 +235,40 @@ class ImportActivity : com.jizhang.app.ui.common.ThemedActivity() {
                 )
                 val text = parsedText
                 if (text == null) {
-                    binding.root.snack(getString(R.string.import_bad_format))
+                    snack(getString(R.string.import_bad_format))
                     return
                 }
                 val result = WeChatBillParser.parse(text, mapping)
                 if (result.rows.isEmpty()) {
-                    binding.root.snack(getString(R.string.import_preview_empty))
+                    snack(getString(R.string.import_preview_empty))
                 } else {
                     buildPreview(result)
                 }
                 return
             }
 
-            MaterialAlertDialogBuilder(this)
-                .setTitle(getString(R.string.import_map_columns) + "：" + labels[position])
-                .setItems(options) { _, which -> indices[position] = which - 1; askFor(position + 1) }
-                .setNegativeButton(R.string.action_cancel, null)
-                .show()
+            dialogs.pickLabels(
+                title = getString(R.string.import_map_columns) + "：" + labels[position],
+                labels = options.toList(),
+                cancelText = getString(R.string.action_cancel),
+            ) { which ->
+                indices[position] = which - 1
+                askFor(position + 1)
+            }
         }
 
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.import_map_columns)
-            .setMessage(R.string.import_map_columns_hint)
-            .setPositiveButton(R.string.action_confirm) { _, _ -> askFor(0) }
-            .setNegativeButton(R.string.action_cancel, null)
-            .show()
+        dialogs.confirm(
+            title = getString(R.string.import_map_columns),
+            message = getString(R.string.import_map_columns_hint),
+            confirmText = getString(R.string.action_confirm),
+            cancelText = getString(R.string.action_cancel),
+        ) {
+            askFor(0)
+        }
     }
 
     private fun buildPreview(result: ParseResult) {
-        showStep(binding.loadingStep)
+        step.value = ImportStep.LOADING
         lifecycleScope.launch {
             val p = withContext(Dispatchers.IO) { useCase.preview(result) }
             preview = p
@@ -266,115 +277,89 @@ class ImportActivity : com.jizhang.app.ui.common.ThemedActivity() {
     }
 
     private fun renderPreview(p: ImportPreview) {
-        binding.totalView.text = p.total.toString()
-        binding.newView.text = p.newCount.toString()
-        binding.dupView.text = p.duplicateCount.toString()
-        binding.skippedView.text = p.unrecognized.toString()
-        binding.skippedGroup.visibility = if (p.unrecognized > 0) View.VISIBLE else View.GONE
-
-        binding.rangeView.text = if (p.earliest != null && p.latest != null) {
-            getString(
-                R.string.import_range,
-                Dates.formatFullDate(p.earliest),
-                Dates.formatFullDate(p.latest),
-            )
-        } else {
-            ""
-        }
-        binding.dupNotice.visibility = if (p.duplicateCount > 0) View.VISIBLE else View.GONE
-
-        binding.importButton.text = getString(R.string.import_confirm_button, p.newCount)
-        binding.importButton.isEnabled = p.newCount > 0
-
-        adapter.submitList(p.candidates)
-        showStep(binding.previewStep)
+        summary.value = ImportSummary(
+            total = p.total,
+            newCount = p.newCount,
+            duplicateCount = p.duplicateCount,
+            unrecognized = p.unrecognized,
+            rangeText = if (p.earliest != null && p.latest != null) {
+                getString(
+                    R.string.import_range,
+                    Dates.formatFullDate(p.earliest),
+                    Dates.formatFullDate(p.latest),
+                )
+            } else {
+                ""
+            },
+        )
+        rows.value = p.candidates.map(::toRow)
+        step.value = ImportStep.PREVIEW
     }
+
+    /** 把一条候选映射成列表行（金额文本 + 颜色在旧的 bind() 里就是这么算的）。 */
+    private fun toRow(candidate: ImportCandidate): ImportPreviewRow {
+        val row = candidate.parsed
+        val subs = mutableListOf<String>()
+        row.tradeType?.takeIf { it.isNotBlank() }?.let { subs += it }
+        row.payMethod?.takeIf { it.isNotBlank() }?.let { subs += it }
+
+        val amountText = when (row.kind) {
+            TxKind.EXPENSE -> Money.formatSigned(row.cents, negative = true)
+            TxKind.INCOME -> Money.formatSigned(row.cents, negative = false)
+            else -> Money.formatCents(row.cents)
+        }
+        val tint = when (row.kind) {
+            TxKind.EXPENSE -> 0
+            TxKind.INCOME -> 1
+            TxKind.TRANSFER -> 2
+            TxKind.NEUTRAL -> 3
+        }
+
+        return ImportPreviewRow(
+            key = candidate.sourceRef
+                ?: "${row.occurredAt}-${row.cents}-${row.counterparty}-${row.item}",
+            dateText = Dates.fromEpochMillis(row.occurredAt).format(SHORT_DATE),
+            title = row.counterparty?.takeIf { it.isNotBlank() }
+                ?: row.item?.takeIf { it.isNotBlank() }
+                ?: row.tradeType.orEmpty(),
+            subText = subs.joinToString(" · "),
+            amountText = amountText,
+            amountColor = Color(tintColor(tint)),
+            duplicate = candidate.duplicate,
+        )
+    }
+
+    /** 在 Activity 侧解析颜色资源（Compose 侧只消费 Color，不读资源 id）。 */
+    private fun tintColor(tint: Int): Int = getColor(
+        when (tint) {
+            0 -> R.color.expense
+            1 -> R.color.income
+            2 -> R.color.transfer
+            else -> R.color.on_surface_variant
+        },
+    )
 
     private fun commit() {
         val p = preview ?: return
         if (p.newCount == 0) {
-            binding.root.snack(getString(R.string.import_nothing_new))
+            snack(getString(R.string.import_nothing_new))
             return
         }
-        showStep(binding.loadingStep)
+        step.value = ImportStep.LOADING
         lifecycleScope.launch {
             val inserted = withContext(Dispatchers.IO) { useCase.commit(p) }
             appContainer.settings.hasImported = true
-            binding.root.snack(getString(R.string.import_done, inserted, p.duplicateCount))
+            snack(getString(R.string.import_done, inserted, p.duplicateCount))
             finish()
         }
     }
 
-    private fun showStep(step: View) {
-        binding.pickStep.visibility = if (step === binding.pickStep) View.VISIBLE else View.GONE
-        binding.previewStep.visibility = if (step === binding.previewStep) View.VISIBLE else View.GONE
-        binding.loadingStep.visibility = if (step === binding.loadingStep) View.VISIBLE else View.GONE
-    }
-
-    private class PreviewAdapter : ListAdapter<ImportCandidate, PreviewHolder>(DIFF) {
-
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PreviewHolder =
-            PreviewHolder(
-                ItemImportPreviewBinding.inflate(LayoutInflater.from(parent.context), parent, false),
-            )
-
-        override fun onBindViewHolder(holder: PreviewHolder, position: Int) {
-            holder.bind(getItem(position))
-        }
-    }
-
-    private class PreviewHolder(private val binding: ItemImportPreviewBinding) :
-        RecyclerView.ViewHolder(binding.root) {
-
-        fun bind(candidate: ImportCandidate) {
-            val row = candidate.parsed
-            binding.dateView.text = Dates.fromEpochMillis(row.occurredAt).format(SHORT_DATE)
-
-            binding.titleView.text = row.counterparty?.takeIf { it.isNotBlank() }
-                ?: row.item?.takeIf { it.isNotBlank() }
-                ?: row.tradeType.orEmpty()
-
-            val subs = mutableListOf<String>()
-            row.tradeType?.takeIf { it.isNotBlank() }?.let { subs += it }
-            row.payMethod?.takeIf { it.isNotBlank() }?.let { subs += it }
-            binding.subView.text = subs.joinToString(" · ")
-
-            binding.amountView.text = when (row.kind) {
-                TxKind.EXPENSE -> Money.formatSigned(row.cents, negative = true)
-                TxKind.INCOME -> Money.formatSigned(row.cents, negative = false)
-                else -> Money.formatCents(row.cents)
-            }
-            binding.amountView.setTextColor(
-                binding.root.context.getColor(
-                    when (row.kind) {
-                        TxKind.EXPENSE -> R.color.expense
-                        TxKind.INCOME -> R.color.income
-                        TxKind.TRANSFER -> R.color.transfer
-                        TxKind.NEUTRAL -> R.color.on_surface_variant
-                    },
-                ),
-            )
-
-            binding.dupBadge.visibility = if (candidate.duplicate) View.VISIBLE else View.GONE
-            binding.root.alpha = if (candidate.duplicate) 0.45f else 1f
-        }
+    private fun snack(message: String) {
+        snackbar.show(message)
     }
 
     private companion object {
         const val FALLBACK_NAME = "bill.csv"
         val SHORT_DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd")
-
-        val DIFF = object : DiffUtil.ItemCallback<ImportCandidate>() {
-            override fun areItemsTheSame(oldItem: ImportCandidate, newItem: ImportCandidate): Boolean {
-                val a = oldItem.sourceRef
-                val b = newItem.sourceRef
-                if (a != null && b != null) return a == b
-                return oldItem.parsed.occurredAt == newItem.parsed.occurredAt &&
-                    oldItem.parsed.cents == newItem.parsed.cents
-            }
-
-            override fun areContentsTheSame(oldItem: ImportCandidate, newItem: ImportCandidate) =
-                oldItem == newItem
-        }
     }
 }

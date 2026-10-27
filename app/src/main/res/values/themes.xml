@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Jizhang" parent="Theme.Material3.DayNight.NoActionBar">
+    <!--
+      v1.50：**风格体系收敛到单一 Theme.Jizhang**。
+
+      以前是「基础主题 + ThemeOverlay.Jizhang.Classic / Elegant / HyperOS 三选一」，
+      一个外观 token 要在三处重复写，界面风格开关只是决定读哪一份。
+      现在经典（CLASSIC）与 MD3（ELEGANT）已删除，剩下的 HyperOS 结构值直接
+      成为基础主题里的唯一真值 —— 代码里不再有任何「按风格取形状」的分支
+      （这也是 v1.47 那条铁律的终点：token 本来就不该有第二份）。
+
+      颜色另走 ThemeOverlay.Jizhang.Palette.*（原 MD3 配色方案，现已全风格可用），
+      两层顺序不变：基础结构 → 配色。
+    -->
+    <style name="BaseTheme.Jizhang" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">@color/brand_primary</item>
         <item name="colorOnPrimary">@color/white</item>
         <item name="colorPrimaryContainer">@color/brand_primary_container</item>
@@ -12,7 +24,18 @@
         <item name="colorSurfaceVariant">@color/surface_variant</item>
         <item name="colorOnSurfaceVariant">@color/on_surface_variant</item>
         <item name="colorError">@color/expense</item>
-        <item name="android:statusBarColor">?attr/colorSurface</item>
+        <!--
+          v1.27：状态栏底色改为**透明**。
+
+          以前是 ?attr/colorSurface（不透明）。在「只有主页边到边」的年代这没问题，
+          因为其它页面本来就不画到状态栏底下。现在所有页面都边到边了，
+          不透明的状态栏底色会**盖住我们自己画的状态栏玻璃** ——
+          玻璃画在窗口里，而系统状态栏背景绘制在它之上，结果就是完全看不到模糊。
+
+          透明之后系统只画图标（时间/电量），那一条的底色由玻璃层提供。
+          图标明暗仍由 windowLightStatusBar 控制，不受这条影响。
+        -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
         <!--
           手势导航（小白条）规范：
           1) 导航栏底色必须是透明的，内容才能画到系统栏底下（边到边）；
@@ -24,35 +47,46 @@
              （windowLightNavigationBar），否则系统画的白条会看不见。
         -->
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="android:enforceNavigationBarContrast">false</item>
-        <item name="android:windowLightNavigationBar">?attr/isLightTheme</item>
         <item name="android:windowBackground">?attr/colorSurface</item>
-        <item name="cardCornerRadiusStyle">28dp</item>
+
+        <!-- ============ 形状 / 间距（原 HyperOS 结构层，已并入） ============ -->
+
+        <!-- HyperOS 用 MiSans。 -->
+        <item name="fontFamily">@font/misans</item>
         <item name="jizhangCardContentPadding">16dp</item>
         <item name="jizhangScreenPadding">16dp</item>
-        <item name="jizhangListHorizontalPadding">12dp</item>
+        <item name="jizhangListHorizontalPadding">16dp</item>
         <item name="jizhangListBottomPadding">24dp</item>
-        <item name="jizhangSectionSpacing">12dp</item>
-        <item name="jizhangCardStrokeWidth">0dp</item>
-        <item name="jizhangCardStrokeColor">@android:color/transparent</item>
+        <item name="jizhangSectionSpacing">16dp</item>
+        <!-- v1.26：内容滚到状态栏底下后，页面自己让出状态栏那一块高度。
+             48dp 是兜底值（多数 ROM 的状态栏高度），运行时由 WindowInsets 覆盖。 -->
+        <item name="jizhangStatusBarPadding">48dp</item>
+        <!-- 卡片用 surfaceContainerLowest（纯白），和灰白页面拉开层次。 -->
         <item name="jizhangCardBackgroundColor">?attr/colorSurfaceContainerLowest</item>
         <item name="jizhangListSectionBackground">?attr/colorSurfaceContainerLowest</item>
-        <item name="jizhangListSectionDividerColor">?attr/colorOutlineVariant</item>
-        <item name="jizhangListSectionCornerRadius">28dp</item>
-        <item name="jizhangRowVerticalPadding">12dp</item>
-        <item name="jizhangListRowPadding">16dp</item>
+        <!-- HyperOS 分组/卡片内部不画分隔线，靠留白和圆角本身分组。 -->
+        <item name="jizhangListSectionDividerColor">@android:color/transparent</item>
+        <item name="jizhangListSectionCornerRadius">24dp</item>
+        <item name="jizhangRowVerticalPadding">16dp</item>
+        <item name="jizhangListRowPadding">20dp</item>
         <item name="jizhangListItemBackground">?attr/colorSurfaceContainerLowest</item>
         <item name="jizhangListItemCornerRadius">20dp</item>
         <item name="jizhangListItemStrokeWidth">0dp</item>
         <item name="jizhangListItemStrokeColor">@android:color/transparent</item>
-        <item name="jizhangListItemMarginHorizontal">8dp</item>
-        <item name="jizhangListItemMarginVertical">3dp</item>
-        <item name="jizhangListItemVerticalPadding">12dp</item>
-        <item name="jizhangSectionHeaderPaddingTop">14dp</item>
-        <item name="jizhangSectionHeaderPaddingBottom">6dp</item>
-        <item name="jizhangAppBarPadding">20dp</item>
-        <item name="jizhangEmptyUseIcon">false</item>
+        <item name="jizhangListItemMarginHorizontal">12dp</item>
+        <item name="jizhangListItemMarginVertical">6dp</item>
+        <item name="jizhangListItemVerticalPadding">16dp</item>
+        <item name="jizhangAppBarPadding">24dp</item>
+
+        <!-- ============ 记账键盘 / 月份切换（原 HyperOS 结构层，已并入） ============ -->
+
+        <item name="jizhangKeyCornerRadius">24dp</item>
+        <item name="jizhangKeyBackgroundTint">?attr/colorSurfaceContainerHigh</item>
+        <item name="jizhangKeypadBackground">?attr/colorSurface</item>
+
+        <!-- ============ 设置页（原 HyperOS 结构层，已并入） ============ -->
+        <item name="jizhangSettingsPageBackground">?attr/colorSurface</item>
     </style>
 
-    <style name="Theme.Jizhang.Splash" parent="Theme.Jizhang" />
+    <style name="Theme.Jizhang" parent="BaseTheme.Jizhang" />
 </resources>

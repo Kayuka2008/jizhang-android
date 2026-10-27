@@ -11,25 +11,14 @@ package com.jizhang.app.ui.glass
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.background
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -40,33 +29,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.paint
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.selected
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastCoerceIn
-import androidx.compose.ui.util.fastRoundToInt
 import androidx.compose.ui.util.lerp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
@@ -77,36 +53,28 @@ import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
-import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 import com.kyant.shapes.Capsule
+import com.jizhang.app.data.prefs.GlassStyle
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.sign
 
-/** 单个页签的展示数据。文案由调用方从 strings.xml 提供，避免 Compose 资源额外依赖。 */
-internal data class GlassTab(
-    val id: Int,
-    val label: String,
-    val icon: ImageVector,
-    /** 选中态图标。MD3 导航栏的惯例是未选中用轮廓、选中用实心。 */
-    val iconSelected: ImageVector = icon,
-)
-
-internal val LocalLiquidBottomTabScale =
-    staticCompositionLocalOf { { 1f } }
-
 /**
+ * 液态玻璃底栏。
+ *
  * Adapted from Kyant0/AndroidLiquidGlass (Apache-2.0).
  *
  * The selected item is a real liquid-glass capsule that the user can drag
  * horizontally. On release it snaps to the nearest tab with a spring, matching
  * the interaction model of the official catalog component.
  *
- * [tabs] 是真实页签；底栏在正中间额外插入一个「记一笔」按钮，该按钮不参与
+ * [tabs] 是真实页签；底栏在正中间额外插入一个「记一笔」槽位，该槽位不参与
  * 选中与拖动吸附，因此选中索引空间仍是 [tabs] 的下标。
+ *
+ * 三层共用相同内容几何：底层玻璃 Row、折射内容 Row、可拖动选中胶囊。
  */
 @Composable
 internal fun LiquidBottomBar(
@@ -115,48 +83,63 @@ internal fun LiquidBottomBar(
     selectedTabIndex: () -> Int,
     onTabSelected: (index: Int) -> Unit,
     onAddClick: () -> Unit,
-    backdrop: Backdrop,
+    backdrop: Backdrop?,
+    glassStyle: GlassStyle,
     pendingBadgeCount: Int,
     isLightTheme: Boolean,
     accentColor: Color,
-    onAccentColor: Color,
     contentColor: Color,
     secondaryContentColor: Color,
     modifier: Modifier = Modifier,
 ) {
     val tabCount = tabs.size
-    /** 页签各占 1 个单位宽，中间加号槽位略宽，用于容纳不撑满槽位的紧凑胶囊。 */
-    val addTabIndex = tabCount / 2
-    val totalWeight = tabCount + ADD_SLOT_WEIGHT
-    /** 页签 [tabIndex] 左边缘在「单位坐标系」里的位置；拖动与吸附都在这个坐标系里计算。 */
-    fun tabLeftUnit(tabIndex: Int): Float =
-        tabIndex + if (tabIndex >= addTabIndex) ADD_SLOT_WEIGHT else 0f
 
-    val containerColor =
-        if (isLightTheme) Color(0xFFFDFEFD).copy(alpha = 0.46f)
-        else Color(0xFF151917).copy(alpha = 0.54f)
-    val tabsBackdrop = rememberLayerBackdrop()
+    /** 「记一笔」槽位插在正中间；页签的视觉位置要跳过它。 */
+    val addTabIndex = tabCount / 2
+
+    /** 总槽数（页签 + 记一笔）。加号槽与页签等宽，拖拽坐标系里占 1 个单位。 */
+    val totalWeight = tabCount + 1
+
+    /** 页签 [tabIndex] 左边缘在「槽位坐标系」里的位置；拖动与吸附都在这个坐标系里计算。 */
+    fun tabLeftUnit(tabIndex: Int): Float =
+        tabIndex + if (tabIndex >= addTabIndex) 1f else 0f
+
+    // 底栏玻璃的底色：**把主题色混进中性底色**（对齐 2.9.8，配比在 Tokens）。
+    // 为什么逐通道 lerp 而不是 Color.copy(alpha)：copy 只改 alpha 不改色相，
+    // 要的是色相也向主题色偏移。
+    val baseColor = if (isLightTheme) GlassBarTokens.BaseColorLight else GlassBarTokens.BaseColorDark
+    val clearLightLabels = glassStyle == GlassStyle.CLEAR && isLightTheme
+    val selectionTint = if (isLightTheme) Color.Black.copy(alpha = .08f)
+                        else Color.White.copy(alpha = .10f)
+    val accentMix = if (isLightTheme) GlassBarTokens.AccentMixLight else GlassBarTokens.AccentMixDark
+    val containerAlpha = when (glassStyle) {
+        GlassStyle.OPAQUE -> 1f
+        GlassStyle.CLEAR -> if (isLightTheme) GlassBarTokens.ClearContainerAlphaLight else GlassBarTokens.ClearContainerAlphaDark
+        GlassStyle.FROSTED -> GlassBarTokens.ContainerAlpha
+    }
+    val containerColor = Color(
+        red = lerp(baseColor.red, accentColor.red, accentMix),
+        green = lerp(baseColor.green, accentColor.green, accentMix),
+        blue = lerp(baseColor.blue, accentColor.blue, accentMix),
+        alpha = containerAlpha,
+    )
+    val tabsBackdrop = if (backdrop != null) rememberLayerBackdrop() else null
 
     BoxWithConstraints(modifier, contentAlignment = Alignment.CenterStart) {
         val density = LocalDensity.current
-        /** 1 个单位宽的像素值（也就是一个普通页签槽位的宽度）。 */
-        val insetPx = with(density) { BAR_INSET.toPx() }
-        val unitWidth = (constraints.maxWidth.toFloat() - insetPx * 2f) / totalWeight
+        /** 玻璃内容区的水平内边距（像素）。槽宽要把两边各减掉这份再平分。 */
+        val insetPx = with(density) { GlassBarTokens.ContentInset.toPx() }
 
-        val offsetAnimation = remember { Animatable(0f) }
-        val panelOffset by remember(density) {
-            derivedStateOf {
-                val fraction =
-                    (offsetAnimation.value / constraints.maxWidth).fastCoerceIn(-1f, 1f)
-                with(density) { 3f.dp.toPx() * fraction.sign * EaseOut.transform(abs(fraction)) }
-            }
-        }
+        /** 单槽宽（像素）= (容器宽 - 2×inset) / 槽数。拖拽几何全部以它为一把尺。 */
+        val unitWidth = (constraints.maxWidth.toFloat() - insetPx * 2f) / totalWeight
 
         val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
         val animationScope = rememberCoroutineScope()
         var currentTabIndex by remember(selectedTabIndex) {
             mutableIntStateOf(selectedTabIndex().coerceIn(0, tabCount - 1))
         }
+
+        val offsetAnimation = remember { Animatable(0f) }
         val dampedDragAnimation = remember(animationScope, tabCount, unitWidth) {
             DampedDragAnimation(
                 animationScope = animationScope,
@@ -210,7 +193,15 @@ internal fun LiquidBottomBar(
                 }
         }
 
-        val interactiveHighlight = remember(animationScope, unitWidth, insetPx) {
+        // 拖动时整条容器跟着手势做一点弹性位移（3dp 封顶），松手弹回。
+        val panelOffset by remember(density) {
+            derivedStateOf {
+                val fraction = (offsetAnimation.value / constraints.maxWidth).fastCoerceIn(-1f, 1f)
+                with(density) { 3f.dp.toPx() * fraction.sign * EaseOut.transform(abs(fraction)) }
+            }
+        }
+
+        val interactiveHighlight = if (backdrop != null) remember(animationScope, unitWidth, insetPx) {
             InteractiveHighlight(
                 animationScope = animationScope,
                 position = { size, _ ->
@@ -225,34 +216,49 @@ internal fun LiquidBottomBar(
                     )
                 },
             )
-        }
+        } else null
 
-        // 底层玻璃：容器背景 + 唯一一份可见的页签内容。
-        // 页签内容只在这里绘制一次，避免多层叠加造成重影。
+        // ---- 第 1 层：底层玻璃（唯一可见的容器）。----
+        // 近全宽（fillMaxWidth，宿主给左右 BarSideGap），四边留 ContentInset。
         Row(
             Modifier
                 .graphicsLayer { translationX = panelOffset }
-                .drawBackdrop(
+                .then(if (backdrop == null) Modifier.background(containerColor, Capsule()) else Modifier.drawBackdrop(
                     backdrop = backdrop,
                     shape = { Capsule() },
                     effects = {
+                        // 官方 LiquidBottomTabs 的配方（v1.37 对齐）：
+                        // vibrancy 提升透过内容的饱和度，是「折射看得清」的一半前提
+                        // （另一半是底色降到 0.4，见 Tokens）。
                         vibrancy()
-                        blur(10f.dp.toPx())
-                        lens(28f.dp.toPx(), 28f.dp.toPx())
+                        blur(GlassBarTokens.BlurRadius.toPx())
+                        lens(
+                            GlassBarTokens.LensRadius.toPx(),
+                            GlassBarTokens.LensRadius.toPx(),
+                        )
                     },
-                    // 关掉玻璃自带的描边。
-                    // 反编译确认默认值：Highlight(width = 0.5.dp, blurRadius = width / 2,
-                    // alpha = 1f) —— 这是一条 0.5dp、**完全不透明**的亮色实边，
-                    // 也就是用户看到的「底栏描边」。省略参数并不会不画，只会继承它。
-                    highlight = { Highlight.Plain.copy(alpha = 0f) },
-                    // 同时关掉底栏的投影。
-                    // 默认 Shadow 是 24dp 模糊 / 6dp 下偏移 / alpha 0.1，本意是给悬浮的
-                    // 玻璃胶囊垫一层落影；用户要求底栏（连同描边）一起做平，这里显式关掉。
-                    // 三层里只有**这一层**是常驻投影：
-                    //   · 折射层（alpha(0f)）整层不可见，它的默认投影自然也看不见；
-                    //   · 可拖拽选中胶囊的 shadow 是 Shadow(alpha = pressProgress)，
-                    //     松手即为 0，属于按压反馈，保留。
-                    shadow = { Shadow.Default.copy(alpha = 0f) },
+                    // 高光描边（v1.35 加回，参数收进 Tokens）：
+                    // 库默认 alpha=1 是完全不透明的实边（v1.28 前用户嫌的那条"描边"），
+                    // 这里压到 HighlightAlpha 做成"隐约勾一圈"。
+                    highlight = {
+                        Highlight.Plain.copy(
+                            width = GlassBarTokens.HighlightWidth,
+                            blurRadius = GlassBarTokens.HighlightWidth,
+                            alpha = GlassBarTokens.HighlightAlpha,
+                        )
+                    },
+                    // 阴影：紧贴胶囊的一点虚影。offset 必须按当前半径现算 ——
+                    // 库的默认 offset 是按 24dp 算死的，copy(radius) 不会跟着变
+                    // （v1.35 修掉的失真）。
+                    shadow = {
+                        Shadow.Default.copy(
+                            radius = GlassBarTokens.ShadowRadius,
+                            offset = DpOffset(
+                                0.dp,
+                                GlassBarTokens.ShadowRadius / GlassBarTokens.ShadowOffsetDivisor,
+                            ),
+                        )
+                    },
                     layerBlock = {
                         val progress = dampedDragAnimation.pressProgress
                         val scale = lerp(1f, 1f + 16f.dp.toPx() / size.width, progress)
@@ -260,11 +266,11 @@ internal fun LiquidBottomBar(
                         scaleY = scale
                     },
                     onDrawSurface = { drawRect(containerColor) },
-                )
-                .then(interactiveHighlight.modifier)
-                .height(BAR_HEIGHT)
+                ))
+                .then(interactiveHighlight?.modifier ?: Modifier)
+                .height(GlassBarTokens.BarHeight)
                 .fillMaxWidth()
-                .padding(BAR_INSET),
+                .padding(GlassBarTokens.ContentInset),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             GlassTabLayer(
@@ -272,10 +278,10 @@ internal fun LiquidBottomBar(
                 currentTabIndex = currentTabIndex,
                 pendingBadgeCount = pendingBadgeCount,
                 accentColor = accentColor,
-                onAccentColor = onAccentColor,
                 contentColor = contentColor,
                 secondaryContentColor = secondaryContentColor,
                 isLightTheme = isLightTheme,
+                clearLightLabels = clearLightLabels,
                 interactive = true,
                 addLabel = addLabel,
                 onAddClick = onAddClick,
@@ -283,8 +289,8 @@ internal fun LiquidBottomBar(
             )
         }
 
-        // 折射层：把落在下方玻璃上的内容再折射一次，形成液态凸起
-        CompositionLocalProvider(
+        // ---- 第 2 层：折射层。把落在下方玻璃上的内容再折射一次，形成液态凸起。----
+        if (backdrop != null && tabsBackdrop != null) CompositionLocalProvider(
             LocalLiquidBottomTabScale provides {
                 lerp(1f, 1.2f, dampedDragAnimation.pressProgress)
             },
@@ -301,19 +307,23 @@ internal fun LiquidBottomBar(
                         effects = {
                             val progress = dampedDragAnimation.pressProgress
                             vibrancy()
-                            blur(10f.dp.toPx())
-                            lens(28f.dp.toPx() * progress, 28f.dp.toPx() * progress)
+                            blur(GlassBarTokens.BlurRadius.toPx())
+                            lens(
+                                GlassBarTokens.LensRadius.toPx() * progress,
+                                GlassBarTokens.LensRadius.toPx() * progress,
+                            )
                         },
-                        highlight = {
-                            Highlight.Default.copy(alpha = dampedDragAnimation.pressProgress)
-                        },
+                        highlight = null,
                         onDrawSurface = { drawRect(containerColor) },
                     )
-                    .then(interactiveHighlight.modifier)
-                    .height(BAR_CONTENT_HEIGHT)
+                    .then(interactiveHighlight?.modifier ?: Modifier)
+                    .height(GlassBarTokens.ContentHeight)
                     .fillMaxWidth()
-                    .padding(horizontal = BAR_INSET)
-                    .graphicsLayer { colorFilter = ColorFilter.tint(accentColor) },
+                    .padding(horizontal = GlassBarTokens.ContentInset)
+                    .graphicsLayer {
+                        // Keep the clear-mode label halo neutral in both content layers.
+                        colorFilter = if (clearLightLabels) null else ColorFilter.tint(accentColor)
+                    },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 GlassTabLayer(
@@ -321,29 +331,59 @@ internal fun LiquidBottomBar(
                     currentTabIndex = currentTabIndex,
                     pendingBadgeCount = pendingBadgeCount,
                     accentColor = accentColor,
-                    onAccentColor = onAccentColor,
                     contentColor = contentColor,
                     secondaryContentColor = secondaryContentColor,
                     isLightTheme = isLightTheme,
+                    clearLightLabels = clearLightLabels,
+                    // 折射层的"记一笔"也要有文字（v1.36 起那一项带文字了）。
+                    // 不传的话这里渲染出一个空文字行 —— 几何上仍对齐，但折射
+                    // 纹理里缺了这块内容，选中胶囊拖过它时会少一片。
+                    // 不传 onAddClick：本层 alpha=0 且 interactive=false，
+                    // 加了点击也不会生效，反而多一个手势节点。
+                    addLabel = addLabel,
                 )
             }
         }
 
-        // 可拖拽的选中胶囊
+        // ---- 第 3 层：可拖拽的选中胶囊。----
         Box(
             Modifier
-                .padding(horizontal = BAR_INSET)
+                // ★ 这层 horizontal padding 不能省 —— 它是"对齐"的关键。
+                //
+                // 底层玻璃 Row 是 fillMaxWidth + 四边 ContentInset，所以内容区
+                // 从 x = inset 开始、槽宽 = (容器宽 - 2×inset) / 槽数。
+                // 胶囊如果也从这个坐标系起算，就必须先把同样的 inset 让出来，
+                // 否则：起点偏左 inset、宽度还多出 2×inset/槽数（因为
+                // fillMaxWidth 是按**未减 padding 的全宽**取比例的）。
+                // v1.36 迷你化时删过这一行（那版没有水平 inset），v1.37 恢复
+                // 近全宽时漏加回来 —— 表现为"选中胶囊和页签错位"。
+                //
+                // padding 必须在 graphicsLayer **之前**：内层拿到的才是减掉
+                // inset 后的坐标系，translationX 与 fillMaxWidth(1/槽数)
+                // 才会和 Row 内容区严丝合缝。
+                .padding(horizontal = GlassBarTokens.ContentInset)
                 .graphicsLayer {
                     translationX =
                         if (isLtr) {
                             dampedDragAnimation.value * unitWidth + panelOffset
                         } else {
-                            size.width - (dampedDragAnimation.value + 1f) * unitWidth + panelOffset
+                            // ★ 这里**不能**用 size.width：graphicsLayer 在
+                            // fillMaxWidth(1f / totalWeight) 之上，它拿到的 size
+                            // 是**胶囊自己的宽度**（= unitWidth），不是内容区宽度。
+                            // 用 size.width 会退化成 -value * unitWidth，整个翻到左边。
+                            // 内容区宽度 = unitWidth × 槽数，直接算，别去问 size。
+                            unitWidth * totalWeight -
+                                (dampedDragAnimation.value + 1f) * unitWidth + panelOffset
                         }
                 }
-                .then(interactiveHighlight.gestureModifier)
+                .then(interactiveHighlight?.gestureModifier ?: Modifier)
                 .then(dampedDragAnimation.modifier)
-                .drawBackdrop(
+                .then(if (backdrop == null || tabsBackdrop == null) {
+                    Modifier.background(
+                        selectionTint,
+                        Capsule(),
+                    )
+                } else Modifier.drawBackdrop(
                     backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop),
                     shape = { Capsule() },
                     effects = {
@@ -354,16 +394,10 @@ internal fun LiquidBottomBar(
                             chromaticAberration = true,
                         )
                     },
-                    highlight = {
-                        Highlight.Default.copy(alpha = dampedDragAnimation.pressProgress)
-                    },
-                    shadow = { Shadow(alpha = dampedDragAnimation.pressProgress) },
-                    innerShadow = {
-                        InnerShadow(
-                            radius = 8.dp * dampedDragAnimation.pressProgress,
-                            alpha = dampedDragAnimation.pressProgress,
-                        )
-                    },
+                    // 拖动胶囊仅保留折射和填色，避免上沿出现跟手移动的亮边/暗边。
+                    highlight = null,
+                    shadow = null,
+                    innerShadow = null,
                     layerBlock = {
                         scaleX = dampedDragAnimation.scaleX
                         scaleY = dampedDragAnimation.scaleY
@@ -374,275 +408,14 @@ internal fun LiquidBottomBar(
                     onDrawSurface = {
                         val progress = dampedDragAnimation.pressProgress
                         drawRect(
-                            if (isLightTheme) Color.Black.copy(0.08f)
-                            else Color.White.copy(0.10f),
+                            selectionTint,
                             alpha = 1f - progress,
                         )
                         drawRect(Color.Black.copy(alpha = 0.03f * progress))
                     },
-                )
-                .height(BAR_CONTENT_HEIGHT)
+                ))
+                .height(GlassBarTokens.ContentHeight)
                 .fillMaxWidth(1f / totalWeight),
         )
     }
 }
-
-/** 底栏玻璃容器高度。 */
-private val BAR_HEIGHT = 68.dp
-
-/** 玻璃容器内边距；内容区域高度 = BAR_HEIGHT - 2 * BAR_INSET。 */
-private val BAR_INSET = 4.dp
-
-/** 内容区域高度，页签文字与中间加号都以此为基准对齐。 */
-private val BAR_CONTENT_HEIGHT = BAR_HEIGHT - (BAR_INSET + BAR_INSET)
-
-/** 中间加号槽位相对于普通页签槽位的宽度倍数；与普通页签等宽，保持轻盈。 */
-private const val ADD_SLOT_WEIGHT = 1f
-
-/**
- * 加号胶囊的高度。
- *
- * 参考图中的加号按钮约占底栏高度的一半，而不是撑满整个内容区；
- * 这样既保留点击热区，又不会在玻璃底栏里显得笨重。
- */
-private val ADD_CAPSULE_HEIGHT = 28.dp
-
-/** 加号图标的绘制尺寸，约为胶囊高度的一半。 */
-private val ADD_ICON_SIZE = 12.dp
-
-/**
- * 绘制一层页签内容。
- *
- * 可见层与折射层必须绘制完全相同的图标与文字，
- * 否则两者位置不一致时会出现重影。
- */
-@Composable
-private fun RowScope.GlassTabLayer(
-    tabs: List<GlassTab>,
-    currentTabIndex: Int,
-    pendingBadgeCount: Int,
-    accentColor: Color,
-    onAccentColor: Color,
-    contentColor: Color,
-    secondaryContentColor: Color,
-    isLightTheme: Boolean,
-    interactive: Boolean = false,
-    addLabel: String = "",
-    onAddClick: (() -> Unit)? = null,
-    onSelected: ((Int) -> Unit)? = null,
-) {
-    val addSlotIndex = tabs.size / 2
-    tabs.forEachIndexed { index, tab ->
-        if (index == addSlotIndex) {
-            GlassAddSlot(
-                label = addLabel,
-                accentColor = accentColor,
-                onAccentColor = onAccentColor,
-                interactive = interactive,
-                onClick = onAddClick,
-            )
-        }
-        val selected = index == currentTabIndex
-        GlassTabSlot(
-            tab = tab,
-            selected = selected,
-            badgeCount = if (tab.id == TAB_PENDING_ID) pendingBadgeCount else 0,
-            accentColor = accentColor,
-            contentColor = contentColor,
-            secondaryContentColor = secondaryContentColor,
-            isLightTheme = isLightTheme,
-            interactive = interactive,
-            onSelected = onSelected?.let { select -> { select(index) } },
-        )
-    }
-}
-
-/** 底栏中间的「记一笔」按钮。 */
-@Composable
-private fun RowScope.GlassAddSlot(
-    label: String,
-    accentColor: Color,
-    onAccentColor: Color,
-    interactive: Boolean,
-    onClick: (() -> Unit)?,
-) {
-    val scale = LocalLiquidBottomTabScale.current
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
-        targetValue = if (pressed) 0.96f else 1f,
-        animationSpec = spring(1f, 600f, 0.72f),
-        label = "glassAddScale",
-    )
-    val icon = rememberVectorPainter(IconAddBold)
-
-    Box(
-        modifier = Modifier
-            .height(BAR_CONTENT_HEIGHT)
-            .weight(ADD_SLOT_WEIGHT)
-            .graphicsLayer {
-                val currentScale = scale()
-                scaleX = currentScale
-                scaleY = currentScale
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Box(
-            modifier = Modifier
-                // 紧凑胶囊加号：高度约为底栏的一半，宽度明显窄于普通页签。
-                .fillMaxWidth(0.56f)
-                .height(ADD_CAPSULE_HEIGHT)
-                .graphicsLayer {
-                    scaleX = pressScale
-                    scaleY = pressScale
-                }
-                .let { base ->
-                    if (!interactive || onClick == null) {
-                        base
-                    } else {
-                        base
-                            .semantics(mergeDescendants = true) {
-                                contentDescription = label
-                            }
-                            .clickable(
-                                interactionSource = interactionSource,
-                                indication = null,
-                                role = Role.Button,
-                                onClick = onClick,
-                            )
-                    }
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(ADD_CAPSULE_HEIGHT)
-                    .graphicsLayer {
-                        shape = Capsule()
-                        clip = false
-                        shadowElevation = if (pressed) 0f else 2f.dp.toPx()
-                        ambientShadowColor = accentColor
-                        spotShadowColor = accentColor
-                    }
-                    .clip(Capsule())
-                    .background(accentColor)
-                    .background(
-                        if (pressed) Color.Black.copy(alpha = 0.08f) else Color.Transparent,
-                    ),
-            )
-            Box(
-                Modifier
-                    .size(ADD_ICON_SIZE)
-                    .paint(icon, colorFilter = ColorFilter.tint(onAccentColor)),
-            )
-        }
-    }
-}
-
-@Composable
-private fun RowScope.GlassTabSlot(
-    tab: GlassTab,
-    selected: Boolean,
-    badgeCount: Int,
-    accentColor: Color,
-    contentColor: Color,
-    secondaryContentColor: Color,
-    isLightTheme: Boolean,
-    interactive: Boolean,
-    onSelected: (() -> Unit)?,
-) {
-    val scale = LocalLiquidBottomTabScale.current
-    val icon = rememberVectorPainter(if (selected) tab.iconSelected else tab.icon)
-    val color = if (selected) accentColor else secondaryContentColor
-    val badgeColor = if (isLightTheme) Color(0xFFBA1A1A) else Color(0xFFFFB4AB)
-
-    Column(
-        modifier = Modifier
-            .clip(Capsule())
-            .let { base ->
-                if (!interactive || onSelected == null) {
-                    base
-                } else {
-                    base
-                        .semantics(mergeDescendants = true) {
-                            contentDescription = tab.label
-                            role = Role.Tab
-                            this.selected = selected
-                        }
-                        .clickable(
-                            interactionSource = null,
-                            indication = null,
-                            role = Role.Tab,
-                            onClick = onSelected,
-                        )
-                }
-            }
-            .height(56.dp)
-            .weight(1f)
-            .graphicsLayer {
-                val currentScale = scale()
-                scaleX = currentScale
-                scaleY = currentScale
-            },
-        // 未选中时不显示文字，图标必须落在槽位正中；选中时图标与文字作为一组整体居中。
-        verticalArrangement = if (selected) {
-            Arrangement.spacedBy(2.dp, Alignment.CenterVertically)
-        } else {
-            Arrangement.Center
-        },
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Box {
-            Box(
-                Modifier
-                    .size(24.dp)
-                    .paint(icon, colorFilter = ColorFilter.tint(color)),
-            )
-            if (badgeCount > 0) {
-                Box(
-                    Modifier
-                        .align(Alignment.TopEnd)
-                        .graphicsLayer { translationX = 8.dp.toPx(); translationY = (-8).dp.toPx() }
-                        .widthIn(min = 16.dp)
-                        .height(16.dp)
-                        .clip(Capsule())
-                        .paint(
-                            rememberVectorPainter(BadgeCircle),
-                            colorFilter = ColorFilter.tint(badgeColor),
-                        ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    BasicText(
-                        text = if (badgeCount > 99) "99+" else badgeCount.toString(),
-                        style = TextStyle(
-                            color = Color.White,
-                            fontSize = if (badgeCount > 99) 7.sp else 9.sp,
-                            fontWeight = FontWeight.Bold,
-                        ),
-                        modifier = Modifier.padding(horizontal = 3.dp),
-                    )
-                }
-            }
-        }
-        // 只有选中项显示文字。未选中时不占位，图标才会真正落在槽位正中，
-        // 不会出现「图标飘在上面」的观感；选中时图标与文字作为整体居中。
-        if (selected) {
-            Box(
-                modifier = Modifier.height(13.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                BasicText(
-                    text = tab.label,
-                    style = TextStyle(
-                        color = contentColor,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                    ),
-                )
-            }
-        }
-    }
-}
-
-internal const val TAB_PENDING_ID = 2

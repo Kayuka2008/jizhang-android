@@ -23,25 +23,5 @@
     <color name="chart_6">#FF80D4D8</color>
     <color name="chart_7">#FFFFB59B</color>
 
-    <!-- MD3 风格深色：Material 3 Baseline 暗色板 -->
-    <color name="elegant_surface">#FF141218</color>
-    <color name="elegant_surface_container_low">#FF1D1B20</color>
-    <color name="elegant_surface_container">#FF211F26</color>
-    <color name="elegant_surface_container_high">#FF2B2930</color>
-    <color name="elegant_surface_container_highest">#FF36343B</color>
-    <color name="elegant_on_surface">#FFE6E0E9</color>
-    <color name="elegant_on_surface_variant">#FFCAC4D0</color>
-    <color name="elegant_outline">#FF938F99</color>
-    <color name="elegant_outline_variant">#FF49454F</color>
-    <color name="elegant_primary">#FFD0BCFF</color>
-    <color name="elegant_primary_container">#FF4F378B</color>
-    <color name="elegant_on_primary_container">#FFEADDFF</color>
-    <color name="elegant_secondary">#FFCCC2DC</color>
-    <color name="elegant_on_primary">#FF381E72</color>
-    <color name="elegant_on_secondary">#FF332D41</color>
-    <color name="elegant_secondary_container">#FF4A4458</color>
-    <color name="elegant_on_secondary_container">#FFE8DEF8</color>
-    <color name="elegant_inverse_surface">#FFE6E0E9</color>
-    <color name="elegant_inverse_on_surface">#FF322F35</color>
-    <color name="ic_launcher_background">#FFE5E7F5</color>
+    <color name="ic_launcher_background">#FF8084A8</color>
 </resources>

@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+        v1.57：触感反馈（记账键盘按键、确认 / 删除等操作的震动）。
+        VIBRATE 是 normal 级权限，安装即授予，不需要动态申请。
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <application
         android:name=".JizhangApp"
         android:allowBackup="false"
@@ -41,6 +47,20 @@
         <activity
             android:name=".ui.DiagnosticActivity"
             android:exported="false" />
+
+        <activity
+            android:name=".ui.settings.AboutActivity"
+            android:exported="false" />
+
+        <!--
+            崩溃日志页。用平台主题、不依赖 AppCompat / Material：
+            它必须在"应用一启动就崩"的情况下还能稳定显示，
+            自身依赖越少越好。
+        -->
+        <activity
+            android:name=".ui.CrashReportActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
 
         <activity
             android:name=".ui.importbill.ImportActivity"

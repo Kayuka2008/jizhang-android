@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    MiSans 字体族（HyperOS）。
+
+    为了压缩包体只保留 Regular 一档字重：Medium/Bold 交由系统在 Regular 上
+    做合成加粗（fake bold）。Android 字体族若只声明一个 font，其余字重的
+    引用会由系统自动用最近的已声明字重 + 合成加粗来满足，因此这里只列 400。
+-->
+<font-family xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <font
+        android:fontStyle="normal"
+        android:fontWeight="400"
+        android:font="@font/misans_regular"
+        app:fontStyle="normal"
+        app:fontWeight="400"
+        app:font="@font/misans_regular" />
+</font-family>

@@ -1,30 +1,32 @@
 package com.jizhang.app.ui
 
-import android.app.DatePickerDialog
+import com.jizhang.app.ui.common.MiuixDatePicker
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.view.View
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.updatePadding
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
-import androidx.recyclerview.widget.GridLayoutManager
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
-import com.google.android.material.textfield.TextInputLayout
+import com.jizhang.app.ui.common.JizhangDialogHost
+import com.jizhang.app.ui.common.JizhangDialogHostView
+import com.jizhang.app.ui.common.JizhangSnackbarHost
+import com.jizhang.app.ui.common.JizhangSnackbarHostView
+import com.jizhang.app.ui.common.secondaryComposeRoot
 import com.jizhang.app.R
 import com.jizhang.app.data.db.entity.Account
 import com.jizhang.app.data.db.entity.Category
 import com.jizhang.app.data.db.entity.Transaction
 import com.jizhang.app.data.db.entity.TxKind
 import com.jizhang.app.data.db.entity.TxSource
-import com.jizhang.app.databinding.ActivityAddTransactionBinding
 import com.jizhang.app.money.Money
-import com.jizhang.app.ui.common.PickerAdapter
-import com.jizhang.app.ui.common.PickerItem
+import com.jizhang.app.ui.add.AddCategoryCell
+import com.jizhang.app.ui.add.AddKindTab
+import com.jizhang.app.ui.add.AddTransactionScreen
+import com.jizhang.app.ui.add.AddUiState
+import com.jizhang.app.ui.common.CategoryIcons
 import com.jizhang.app.ui.common.appContainer
-import com.jizhang.app.ui.common.snack
+import com.jizhang.app.ui.common.hapticConfirm
+import com.jizhang.app.ui.common.hapticKey
 import com.jizhang.app.util.Dates
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -34,12 +36,45 @@ import java.time.LocalTime
 
 /**
  * 记一笔 / 编辑账目。
+ *
+ * v1.53：视图层改成 Compose + miuix（原 activity_add_transaction.xml / item_picker_cell.xml /
+ * PickerAdapter 全删，分类网格改用 LazyVerticalGrid）。
+ *
+ * ★ 业务（金额解析、分类/账户校验、写库、日期与备注弹窗、账户单选）**全部留在 Activity**。
+ *   Compose 侧只消费一份 [AddUiState] 快照 + 一串回调。
+ *
+ * ★ 旧的 PickerAdapter 做过的「快速切换方向时旧结果不覆盖当前页」防抖（categoryLoadVersion）
+ *   原样保留 —— 那是并发正确性问题，不随视图层改动。
+ *
+ * ★ 系统栏：顶栏避让状态栏、键盘避让导航栏，都由 insets 订阅后推进 state（绝不在组合体里现读）。
  */
-class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
+class AddTransactionActivity : com.jizhang.app.ui.common.SecondaryActivity() {
 
-    private lateinit var binding: ActivityAddTransactionBinding
+
+    private val ui = mutableStateOf(
+        AddUiState(
+            kind = AddKindTab.EXPENSE,
+            amountText = "0.00",
+            categories = emptyList(),
+            selectedCategoryId = null,
+            categoryEmpty = false,
+            dateText = "",
+            noteText = "",
+            noteIsHint = true,
+            accountText = "",
+            toAccountText = "",
+            canSave = false,
+            editing = false,
+        ),
+    )
 
     private var editingId: Long = 0
+
+    /** 统一对话框宿主（v1.56）。 */
+    private val dialogs = JizhangDialogHost()
+
+    /** 统一提示条宿主（v1.60）。 */
+    private val snackbar = JizhangSnackbarHost()
 
     private var kind: TxKind = TxKind.EXPENSE
     private var amountInput: String = ""
@@ -53,90 +88,113 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
     private var occurredTime: LocalTime = LocalTime.now().withSecond(0).withNano(0)
 
     private var accounts: List<Account> = emptyList()
-    private lateinit var categoryAdapter: PickerAdapter
+    private var loadedCategories: List<Category> = emptyList()
     private var saving = false
     private var accountsLoaded = false
     private var pendingAccountRemovedNotice = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityAddTransactionBinding.inflate(layoutInflater)
-        setContentView(binding.root)
 
         editingId = intent.getLongExtra(EXTRA_ID, 0L)
+        occurredDate = LocalDate.now()
+        occurredTime = LocalTime.now().withSecond(0).withNano(0)
 
-        applySystemBarInsets()
-        setupTabs()
-        setupCategoryGrid()
-        setupKeypad()
-        setupInfoButtons()
+        val root = secondaryComposeRoot {
+                // ★ v1.57：这里原来有一句 `BackHandler(enabled = editingId == 0L) { }`。
+                //   BackHandler 一旦注册就会**消费**返回手势与返回键，而它的 lambda 是空的 ——
+                //   等于把「退出」这个动作直接吞掉：新建账目时侧滑返回完全没有反应
+                //   （注释写的是「新建时不拦返回，交给系统」，但 enabled=true 恰恰就是拦住了）。
+                //   现在不注册 BackHandler：系统默认返回 = finish()，与右上角关闭按钮
+                //   onClose 完全等价。
+                AddTransactionScreen(
+                    state = ui.value,
+                    onClose = { finish() },
+                    onPickKind = { pickKind(it) },
+                    onDelete = { confirmDelete() },
+                    onKey = { onKey(it) },
+                    onClear = {
+                        amountInput = ""
+                        renderAmount()
+                    },
+                    onSave = { save() },
+                    onPickDate = { pickDate() },
+                    onEditNote = { editNote() },
+                    onPickAccount = { pickAccount(forTransferTarget = false) },
+                    onPickToAccount = { pickAccount(forTransferTarget = true) },
+                    onPickCategory = { pickCategory(it) },
+                )
+                JizhangDialogHostView(dialogs)
+                JizhangSnackbarHostView(snackbar)
+        }
+        setContentView(root)
+
         observeData()
     }
 
-    /**
-     * 让顶栏与键盘避开系统栏。
-     *
-     * 如果窗口已经是边到边绘制，这里会拿到真实的系统栏高度并把内容推上来；
-     * 如果系统已经把内容限制在系统栏以内，拿到的就是 0，不会重复留白。
-     * 之前键盘最后一行（0 / . / 保存）在某些机型上会压在导航栏下面，
-     * 看起来就像「没有 0 这个键」。
-     */
-    private fun applySystemBarInsets() {
-        val baseTopPadding = binding.topBar.paddingTop
-        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            // 顶栏避开状态栏，键盘避开导航栏；页面底色仍然铺满整屏。
-            // 加回 XML 定义的间距，避免 Android 10+ 上 insets 覆盖后顶栏贴住状态栏。
-            binding.topBar.updatePadding(top = bars.top + baseTopPadding)
-            binding.keypadPanel.updatePadding(
-                bottom = bars.bottom +
-                    resources.getDimensionPixelSize(R.dimen.keypad_padding_bottom),
-            )
-            WindowInsetsCompat.CONSUMED
-        }
+    // ---- 状态组装 ---------------------------------------------------------
+
+    /** 把 Activity 的散装字段拼成一份快照推给 Compose。 */
+    private fun pushState() {
+        ui.value = AddUiState(
+            kind = kind.toTab(),
+            amountText = if (amountInput.isEmpty()) "0.00" else amountInput,
+            categories = loadedCategories.map { c ->
+                AddCategoryCell(
+                    id = c.id,
+                    name = c.name,
+                    iconRes = CategoryIcons.of(c.name, c.emoji),
+                    special = false,
+                )
+            } + AddCategoryCell(
+                id = MANAGE_ID,
+                name = getString(R.string.add_manage_category),
+                iconRes = R.drawable.ic_manage,
+                special = true,
+            ),
+            selectedCategoryId = selectedCategoryId,
+            categoryEmpty = kind != TxKind.TRANSFER && loadedCategories.isEmpty(),
+            dateText = Dates.sectionTitle(occurredDate),
+            noteText = if (note.isBlank()) getString(R.string.add_hint_note) else note,
+            noteIsHint = note.isBlank(),
+            accountText = accountLabel(),
+            toAccountText = toAccountLabel(),
+            canSave = canSave(),
+            editing = editingId != 0L,
+        )
     }
 
-    private fun setupTabs() {
-        val kinds = listOf(TxKind.EXPENSE, TxKind.INCOME, TxKind.TRANSFER)
-        val kindButtons = listOf(binding.kindExpense, binding.kindIncome, binding.kindTransfer)
-
-        binding.kindTabs.addOnButtonCheckedListener { _, checkedId, isChecked ->
-            if (isChecked) {
-                val index = kindButtons.indexOfFirst { it.id == checkedId }
-                if (index < 0) return@addOnButtonCheckedListener
-                val nextKind = kinds[index]
-                if (nextKind == kind) return@addOnButtonCheckedListener
-
-                // 每个方向分别记住自己的分类，收入/支出来回切换时不会互相清空。
-                rememberCategorySelection()
-                kind = nextKind
-                selectedCategoryId = categorySelections[kind]
-                applyKindUi()
-                binding.accountButton.text = accountLabel()
-                reloadCategories(resetScroll = true)
-                updateSaveState()
-            }
-        }
-
-        binding.closeButton.setOnClickListener { finish() }
-        binding.deleteButton.setOnClickListener { confirmDelete() }
+    private fun TxKind.toTab(): AddKindTab = when (this) {
+        TxKind.EXPENSE -> AddKindTab.EXPENSE
+        TxKind.INCOME -> AddKindTab.INCOME
+        else -> AddKindTab.TRANSFER
     }
 
-    private fun setupCategoryGrid() {
-        categoryAdapter = PickerAdapter { item ->
-            if (item.id == MANAGE_ID) {
-                startActivity(Intent(this, CategoryManageActivity::class.java))
-            } else {
-                selectedCategoryId = item.id
-                categorySelections[kind] = item.id
-                appContainer.settings.lastCategoryId = item.id
-                categoryAdapter.selectId(item.id)
-                updateSaveState()
-            }
-        }
-        binding.categoryGrid.layoutManager = GridLayoutManager(this, 4)
-        binding.categoryGrid.itemAnimator = null
-        binding.categoryGrid.adapter = categoryAdapter
+    private fun AddKindTab.toKind(): TxKind = when (this) {
+        AddKindTab.EXPENSE -> TxKind.EXPENSE
+        AddKindTab.INCOME -> TxKind.INCOME
+        AddKindTab.TRANSFER -> TxKind.TRANSFER
+    }
+
+    private fun canSave(): Boolean {
+        if (saving) return false
+        val hasAmount = Money.keyboardToCents(amountInput) > 0
+        val needsCategory = kind != TxKind.TRANSFER
+        return hasAmount && (!needsCategory || selectedCategoryId != null)
+    }
+
+    // ---- 类型切换 ---------------------------------------------------------
+
+    private fun pickKind(tab: AddKindTab) {
+        val nextKind = tab.toKind()
+        if (nextKind == kind) return
+
+        // 每个方向分别记住自己的分类，收入/支出来回切换时不会互相清空。
+        rememberCategorySelection()
+        kind = nextKind
+        selectedCategoryId = categorySelections[kind]
+        reloadCategories(resetScroll = true)
+        pushState()
     }
 
     private fun rememberCategorySelection() {
@@ -145,9 +203,25 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
             ?: categorySelections.remove(kind)
     }
 
+    // ---- 分类 -------------------------------------------------------------
+
+    private fun pickCategory(cell: AddCategoryCell) {
+        if (cell.special) {
+            startActivity(Intent(this, CategoryManageActivity::class.java))
+            return
+        }
+        selectedCategoryId = cell.id
+        categorySelections[kind] = cell.id
+        appContainer.settings.lastCategoryId = cell.id
+        pushState()
+    }
+
     private fun reloadCategories(resetScroll: Boolean = false) {
         val requestedKind = kind
         val loadVersion = ++categoryLoadVersion
+        // resetScroll 目前只影响旧版的滚动定位；Compose 网格由 LazyVerticalGrid 自行管理，
+        // 这里保留形参以维持调用点语义。
+        if (resetScroll) { /* no-op */ }
 
         lifecycleScope.launch {
             val list: List<Category> = when (requestedKind) {
@@ -170,7 +244,7 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
                     if (appContainer.settings.lastCategoryId == invalidId) {
                         appContainer.settings.lastCategoryId = 0L
                     }
-                    binding.root.snack(getString(R.string.add_category_removed))
+                    snack(getString(R.string.add_category_removed))
                 } else {
                     // 分类仍然存在，只是属于另一个方向；留给切换方向时恢复。
                     categorySelections[existing.kind] = existing.id
@@ -181,77 +255,25 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
                 categorySelections[requestedKind] = selected
             }
 
-            val items = list.map { PickerItem(it.id, it.emoji, it.name) } +
-                PickerItem(MANAGE_ID, "➕", getString(R.string.add_manage_category))
-
-            categoryAdapter.selectId(selected ?: -1L)
-            categoryAdapter.submitList(items) {
-                if (requestedKind != kind || loadVersion != categoryLoadVersion) return@submitList
-                binding.categoryGrid.post {
-                    if (requestedKind != kind || loadVersion != categoryLoadVersion) return@post
-                    // 管理分类入口的 id 也是负数，不能把它当成当前选中项。
-                    val selectedPosition = if (categoryAdapter.selectedId >= 0) {
-                        items.indexOfFirst { it.id == categoryAdapter.selectedId }
-                    } else {
-                        -1
-                    }
-                    val manager = binding.categoryGrid.layoutManager as? GridLayoutManager
-                    if (selectedPosition >= 0) {
-                        manager?.scrollToPositionWithOffset(selectedPosition, 0)
-                    } else if (resetScroll) {
-                        manager?.scrollToPosition(0)
-                    }
-                }
-            }
-            binding.categoryEmptyHint.visibility =
-                if (requestedKind != TxKind.TRANSFER && list.isEmpty()) View.VISIBLE else View.GONE
+            loadedCategories = list
+            pushState()
         }
     }
 
-    /** 类型决定页面上哪些区块可见：转账没有分类，改为提示选择转入账户。 */
-    private fun applyKindUi() {
-        val isTransfer = kind == TxKind.TRANSFER
-        binding.amountLabel.setText(kind.label)
-        binding.toAccountButton.visibility = if (isTransfer) View.VISIBLE else View.GONE
-        binding.categoryGrid.visibility = if (isTransfer) View.GONE else View.VISIBLE
-        binding.transferHint.visibility = if (isTransfer) View.VISIBLE else View.GONE
-        binding.categoryEmptyHint.visibility = View.GONE
-    }
-
-    private fun setupKeypad() {
-        listOf(
-            binding.key1 to "1", binding.key2 to "2", binding.key3 to "3",
-            binding.key4 to "4", binding.key5 to "5", binding.key6 to "6",
-            binding.key7 to "7", binding.key8 to "8", binding.key9 to "9",
-            binding.key0 to "0",
-            binding.keyDot to ".",
-        ).forEach { (button, key) -> button.setOnClickListener { onKey(key) } }
-
-        binding.keyDel.setOnClickListener { onKey("del") }
-        binding.keyClear.setOnClickListener {
-            amountInput = ""
-            renderAmount()
-        }
-        binding.keySave.setOnClickListener { save() }
-        binding.keyDate.setOnClickListener { pickDate() }
-    }
-
-    private fun setupInfoButtons() {
-        binding.dateButton.setOnClickListener { pickDate() }
-        binding.noteButton.setOnClickListener { editNote() }
-        binding.accountButton.setOnClickListener { pickAccount(forTransferTarget = false) }
-        binding.toAccountButton.setOnClickListener { pickAccount(forTransferTarget = true) }
-    }
+    // ---- 金额键盘 ---------------------------------------------------------
 
     private fun onKey(key: String) {
         amountInput = Money.appendKey(amountInput, key)
         renderAmount()
+        // 每次按键给一下最轻的触感（受设置里「触感反馈」开关控制，见 Haptics.kt）。
+        hapticKey()
     }
 
     private fun renderAmount() {
-        binding.amountView.text = if (amountInput.isEmpty()) "0.00" else amountInput
-        updateSaveState()
+        pushState()
     }
+
+    // ---- 数据观察 ---------------------------------------------------------
 
     private fun observeData() {
         lifecycleScope.launch {
@@ -266,32 +288,27 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
                 if (toAccountId == null || list.none { it.id == toAccountId }) {
                     toAccountId = list.firstOrNull { it.id != accountId }?.id
                 }
-                binding.accountButton.text = accountLabel()
-                renderToAccount()
                 if (pendingAccountRemovedNotice) {
                     pendingAccountRemovedNotice = false
-                    binding.root.snack(getString(R.string.add_account_removed))
+                    snack(getString(R.string.add_account_removed))
                 }
                 accountsLoaded = true
+                pushState()
             }
         }
 
         if (editingId != 0L) {
+            pushState()
             lifecycleScope.launch {
                 appContainer.transactionRepo.findById(editingId)?.let { prefill(it) }
             }
         } else {
             amountInput = ""
-            renderAmount()
-            binding.dateButton.text = Dates.sectionTitle(occurredDate)
-            binding.keyDate.text = Dates.sectionTitle(occurredDate)
-            binding.deleteButton.visibility = View.GONE
-            binding.noteButton.text = getString(R.string.add_hint_note)
-
             if (appContainer.settings.rememberLastSelection) {
                 val last = appContainer.settings.lastCategoryId
                 if (last != 0L) selectedCategoryId = last
             }
+            pushState()
             reloadCategories(resetScroll = true)
         }
     }
@@ -304,34 +321,18 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
 
     private fun prefill(tx: Transaction) {
         kind = tx.kind
-        val kinds = listOf(TxKind.EXPENSE, TxKind.INCOME, TxKind.TRANSFER)
-        val kindIndex = kinds.indexOf(kind)
-        if (kindIndex >= 0) {
-            binding.kindTabs.check(
-                listOf(binding.kindExpense, binding.kindIncome, binding.kindTransfer)[kindIndex].id,
-            )
-        }
-        applyKindUi()
-
         amountInput = Money.formatCents(tx.cents)
-        renderAmount()
-
         selectedCategoryId = tx.categoryId
         tx.categoryId?.let { categorySelections[tx.kind] = it }
         accountId = tx.accountId
         toAccountId = tx.toAccountId
         note = tx.note.orEmpty()
-        if (note.isNotBlank()) binding.noteButton.text = note
 
         val dt = Dates.fromEpochMillis(tx.occurredAt)
         occurredDate = dt.toLocalDate()
         occurredTime = dt.toLocalTime().withSecond(0).withNano(0)
-        binding.dateButton.text = Dates.sectionTitle(occurredDate)
-        binding.keyDate.text = Dates.sectionTitle(occurredDate)
 
-        binding.accountButton.text = accountLabel()
-        renderToAccount()
-        binding.deleteButton.visibility = View.VISIBLE
+        pushState()
         reloadCategories(resetScroll = true)
     }
 
@@ -340,59 +341,42 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
         return accounts.firstOrNull { it.id == id }?.name ?: getString(R.string.add_need_account)
     }
 
-    private fun renderToAccount() {
-        if (kind != TxKind.TRANSFER) return
+    private fun toAccountLabel(): String {
         val name = accounts.firstOrNull { it.id == toAccountId }?.name
-        binding.toAccountButton.text = if (name == null) {
+        return if (name == null) {
             getString(R.string.add_label_to_account)
         } else {
             getString(R.string.add_label_to_account) + "：" + name
         }
     }
 
-    private fun updateSaveState() {
-        if (saving) return
-        val hasAmount = Money.keyboardToCents(amountInput) > 0
-        val needsCategory = kind != TxKind.TRANSFER
-        binding.keySave.isEnabled = hasAmount && (!needsCategory || selectedCategoryId != null)
-        binding.keySave.alpha = if (binding.keySave.isEnabled) 1f else 0.6f
-    }
+    // ---- 弹窗 -------------------------------------------------------------
 
     private fun pickDate() {
-        DatePickerDialog(
-            this,
-            { _, year, month, day ->
-                occurredDate = LocalDate.of(year, month + 1, day)
-                binding.dateButton.text = Dates.sectionTitle(occurredDate)
-                binding.keyDate.text = Dates.sectionTitle(occurredDate)
-            },
-            occurredDate.year,
-            occurredDate.monthValue - 1,
-            occurredDate.dayOfMonth,
-        ).show()
+        dialogs.custom(title = getString(R.string.date_picker_title)) { dismiss ->
+            MiuixDatePicker(
+                initialDate = occurredDate,
+                onCancel = dismiss,
+                onConfirm = { date ->
+                    occurredDate = date
+                    pushState()
+                    dismiss()
+                },
+            )
+        }
     }
 
     private fun editNote() {
-        val layout = TextInputLayout(this).apply {
-            hint = getString(R.string.add_label_note)
-            setPadding(48, 24, 48, 0)
+        dialogs.input(
+            title = getString(R.string.add_label_note),
+            initial = note,
+            confirmText = getString(R.string.action_confirm),
+            cancelText = getString(R.string.action_cancel),
+            maxLines = 2,
+        ) { text ->
+            note = text.trim()
+            pushState()
         }
-        val input = TextInputEditText(this).apply {
-            setText(note)
-            maxLines = 2
-        }
-        layout.addView(input)
-
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.add_label_note)
-            .setView(layout)
-            .setPositiveButton(R.string.action_confirm) { _, _ ->
-                note = input.text?.toString().orEmpty().trim()
-                binding.noteButton.text =
-                    if (note.isBlank()) getString(R.string.add_hint_note) else note
-            }
-            .setNegativeButton(R.string.action_cancel, null)
-            .show()
     }
 
     private fun pickAccount(forTransferTarget: Boolean) {
@@ -404,45 +388,48 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
         val current = if (forTransferTarget) toAccountId else accountId
         val checked = accounts.indexOfFirst { it.id == current }
 
-        MaterialAlertDialogBuilder(this)
-            .setTitle(if (forTransferTarget) R.string.add_label_to_account else R.string.add_label_account)
-            .setSingleChoiceItems(names, checked) { dialog, which ->
-                val picked = accounts[which].id
-                if (forTransferTarget) {
-                    toAccountId = picked
-                    renderToAccount()
-                } else {
-                    accountId = picked
-                    binding.accountButton.text = accountLabel()
-                }
-                dialog.dismiss()
+        dialogs.pickLabels(
+            title = getString(
+                if (forTransferTarget) R.string.add_label_to_account else R.string.add_label_account,
+            ),
+            labels = names.toList(),
+            selectedIndex = checked,
+            cancelText = getString(R.string.action_cancel),
+        ) { which ->
+            val picked = accounts[which].id
+            if (forTransferTarget) {
+                toAccountId = picked
+            } else {
+                accountId = picked
             }
-            .setNegativeButton(R.string.action_cancel, null)
-            .show()
+            pushState()
+        }
     }
+
+    // ---- 保存 -------------------------------------------------------------
 
     private fun save() {
         if (saving) return
         val cents = Money.keyboardToCents(amountInput)
         if (cents <= 0) {
-            binding.root.snack(getString(R.string.add_need_amount))
+            snack(getString(R.string.add_need_amount))
             return
         }
         if (kind != TxKind.TRANSFER && selectedCategoryId == null) {
-            binding.root.snack(getString(R.string.add_need_category))
+            snack(getString(R.string.add_need_category))
             return
         }
         if (accountId == null) {
-            binding.root.snack(getString(R.string.add_need_account))
+            snack(getString(R.string.add_need_account))
             return
         }
         if (kind == TxKind.TRANSFER) {
             if (toAccountId == null) {
-                binding.root.snack(getString(R.string.add_need_to_account))
+                snack(getString(R.string.add_need_to_account))
                 return
             }
             if (toAccountId == accountId) {
-                binding.root.snack(getString(R.string.add_same_account))
+                snack(getString(R.string.add_same_account))
                 return
             }
         }
@@ -451,15 +438,15 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
             .atZone(Dates.ZONE).toInstant().toEpochMilli()
 
         saving = true
-        binding.keySave.isEnabled = false
+        pushState()
         lifecycleScope.launch {
             try {
                 // 管理页可能刚删除或归档了当前选择，保存前以数据库状态为准。
                 val fromAccount = accountId?.let { appContainer.accountRepo.findById(it) }
                 if (fromAccount == null || fromAccount.archived) {
                     accountId = null
-                    binding.accountButton.text = accountLabel()
-                    binding.root.snack(getString(R.string.add_account_removed))
+                    pushState()
+                    snack(getString(R.string.add_account_removed))
                     return@launch
                 }
 
@@ -467,12 +454,12 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
                     val toAccount = toAccountId?.let { appContainer.accountRepo.findById(it) }
                     if (toAccount == null || toAccount.archived) {
                         toAccountId = null
-                        renderToAccount()
-                        binding.root.snack(getString(R.string.add_need_to_account))
+                        pushState()
+                        snack(getString(R.string.add_need_to_account))
                         return@launch
                     }
                     if (toAccount.id == fromAccount.id) {
-                        binding.root.snack(getString(R.string.add_same_account))
+                        snack(getString(R.string.add_same_account))
                         return@launch
                     }
                 } else {
@@ -485,7 +472,7 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
                             appContainer.settings.lastCategoryId = 0L
                         }
                         reloadCategories()
-                        binding.root.snack(getString(R.string.add_category_removed))
+                        snack(getString(R.string.add_category_removed))
                         return@launch
                     }
                 }
@@ -507,7 +494,7 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
                 } else {
                     val original = appContainer.transactionRepo.findById(editingId)
                     if (original == null) {
-                        binding.root.snack(getString(R.string.add_transaction_removed))
+                        snack(getString(R.string.add_transaction_removed))
                         finish()
                         return@launch
                     }
@@ -524,43 +511,44 @@ class AddTransactionActivity : com.jizhang.app.ui.common.ThemedActivity() {
                     )
                 }
                 appContainer.settings.lastCategoryId = selectedCategoryId ?: 0L
+                hapticConfirm()
                 finish()
             } finally {
                 saving = false
-                updateSaveState()
+                pushState()
             }
         }
     }
 
     private fun confirmDelete() {
-        MaterialAlertDialogBuilder(this)
-            .setMessage(R.string.add_delete_confirm)
-            .setPositiveButton(R.string.action_delete) { _, _ ->
-                lifecycleScope.launch {
-                    appContainer.transactionRepo.deleteById(editingId)
-                    finish()
-                }
+        dialogs.confirm(
+            message = getString(R.string.add_delete_confirm),
+            confirmText = getString(R.string.action_delete),
+            cancelText = getString(R.string.action_cancel),
+        ) {
+            lifecycleScope.launch {
+                appContainer.transactionRepo.deleteById(editingId)
+                finish()
             }
-            .setNegativeButton(R.string.action_cancel, null)
-            .show()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         // 分类/账户可能在管理页被改动
-        if (::categoryAdapter.isInitialized) reloadCategories()
-        if (::binding.isInitialized) {
-            if (accountId != null && accounts.none { it.id == accountId }) {
-                accountId = null
-                binding.root.snack(getString(R.string.add_account_removed))
-            }
-            if (toAccountId != null && accounts.none { it.id == toAccountId }) {
-                toAccountId = null
-            }
-            binding.accountButton.text = accountLabel()
-            renderToAccount()
-            updateSaveState()
+        reloadCategories()
+        if (accountId != null && accounts.none { it.id == accountId }) {
+            accountId = null
+            snack(getString(R.string.add_account_removed))
         }
+        if (toAccountId != null && accounts.none { it.id == toAccountId }) {
+            toAccountId = null
+        }
+        pushState()
+    }
+
+    private fun snack(message: String) {
+        snackbar.show(message)
     }
 
     companion object {

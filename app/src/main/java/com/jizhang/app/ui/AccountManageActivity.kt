@@ -1,46 +1,79 @@
 package com.jizhang.app.ui
 
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.ViewGroup
-import android.widget.LinearLayout
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
-import androidx.recyclerview.widget.DiffUtil
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.ListAdapter
-import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
-import com.google.android.material.textfield.TextInputLayout
+import com.jizhang.app.ui.common.secondaryComposeRoot
 import com.jizhang.app.R
 import com.jizhang.app.data.db.entity.Account
 import com.jizhang.app.data.db.entity.AccountType
 import com.jizhang.app.data.repo.AccountBalance
 import com.jizhang.app.data.repo.DeleteResult
-import com.jizhang.app.databinding.ActivityAccountManageBinding
-import com.jizhang.app.databinding.ItemAccountManageBinding
 import com.jizhang.app.money.Money
+import com.jizhang.app.ui.account.AccountManageScreen
+import com.jizhang.app.ui.account.AccountRow
+import com.jizhang.app.ui.common.ATTR_ON_SURFACE_VARIANT
+import com.jizhang.app.ui.common.DialogButton
+import com.jizhang.app.ui.common.DialogTextField
+import com.jizhang.app.ui.common.JizhangDialogHost
+import com.jizhang.app.ui.common.JizhangDialogHostView
+import com.jizhang.app.ui.common.JizhangSnackbarHost
+import com.jizhang.app.ui.common.JizhangSnackbarHostView
 import com.jizhang.app.ui.common.appContainer
-import com.jizhang.app.ui.common.snack
+import com.jizhang.app.ui.common.themeColor
 import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** 账户管理：显示各账户余额与净资产。 */
-class AccountManageActivity : com.jizhang.app.ui.common.ThemedActivity() {
+class AccountManageActivity : com.jizhang.app.ui.common.SecondaryActivity() {
 
-    private lateinit var binding: ActivityAccountManageBinding
-    private lateinit var adapter: AccountAdapter
+    private val netWorthText = mutableStateOf("")
+    private val netWorthNegative = mutableStateOf(false)
+    private val rows = mutableStateOf<List<AccountRow>>(emptyList())
+
+    /** 统一对话框宿主（v1.56）。 */
+    private val dialogs = JizhangDialogHost()
+
+    /** 统一提示条宿主（v1.60）。 */
+    private val snackbar = JizhangSnackbarHost()
+
+    /** id → 账户实体，回调里要拿原始对象（Compose 只传行数据）。 */
+    private var balances: List<AccountBalance> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityAccountManageBinding.inflate(layoutInflater)
-        setContentView(binding.root)
 
-        binding.toolbar.setNavigationOnClickListener { finish() }
-        binding.addButton.setOnClickListener { showEditor(null) }
-
-        adapter = AccountAdapter(onEdit = { showEditor(it) }, onDelete = { confirmDelete(it) })
-        binding.list.layoutManager = LinearLayoutManager(this)
-        binding.list.adapter = adapter
+        val root = secondaryComposeRoot {
+                AccountManageScreen(
+                    netWorthText = netWorthText.value,
+                    netWorthNegative = netWorthNegative.value,
+                    accounts = rows.value,
+                    onBack = { finish() },
+                    onAdd = { showEditor(null) },
+                    onEdit = { row ->
+                        balances.firstOrNull { it.account.id == row.id }?.let { showEditor(it.account) }
+                    },
+                    onDelete = { row ->
+                        balances.firstOrNull { it.account.id == row.id }?.let { confirmDelete(it.account) }
+                    },
+                )
+                JizhangDialogHostView(dialogs)
+                JizhangSnackbarHostView(snackbar)
+        }
+        setContentView(root)
 
         observe()
     }
@@ -48,86 +81,66 @@ class AccountManageActivity : com.jizhang.app.ui.common.ThemedActivity() {
     private fun observe() {
         lifecycleScope.launch {
             appContainer.accountRepo.observeActive().collect { list ->
-                val balances = list.map { AccountBalance(it, appContainer.accountRepo.balanceOf(it)) }
-                adapter.submitList(balances)
-
-                val net = balances.sumOf { it.cents }
-                binding.netWorthView.text = Money.formatCentsWithSymbol(net)
-                binding.netWorthView.setTextColor(
-                    getColor(if (net < 0) R.color.expense else R.color.on_surface),
-                )
+                val data = list.map { AccountBalance(it, appContainer.accountRepo.balanceOf(it)) }
+                balances = data
+                rows.value = data.map { b ->
+                    AccountRow(
+                        id = b.account.id,
+                        name = b.account.name,
+                        typeLabel = b.account.type.label,
+                        balanceText = Money.formatCentsWithSymbol(b.cents),
+                        negative = b.cents < 0,
+                        builtin = b.account.builtin,
+                    )
+                }
+                val net = data.sumOf { it.cents }
+                netWorthText.value = Money.formatCentsWithSymbol(net)
+                netWorthNegative.value = net < 0
             }
         }
     }
 
+    private fun snack(message: String) {
+        snackbar.show(message)
+    }
+
     private fun showEditor(existing: Account?) {
         val types = AccountType.entries
-        val typeHolder = arrayOf(existing?.type ?: AccountType.WECHAT)
-
-        val form = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(48, 24, 48, 0)
-        }
-
-        val nameLayout = TextInputLayout(this).apply { hint = getString(R.string.account_name) }
-        val nameInput = TextInputEditText(this).apply {
-            setText(existing?.name.orEmpty())
-            maxLines = 1
-        }
-        nameLayout.addView(nameInput)
-        form.addView(nameLayout)
-
-        val initialLayout = TextInputLayout(this).apply {
-            hint = getString(R.string.account_initial)
-            helperText = getString(R.string.account_initial_desc)
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            )
-            lp.topMargin = (resources.displayMetrics.density * 12).toInt()
-            layoutParams = lp
-        }
-        val initialInput = TextInputEditText(this).apply {
-            setText(Money.formatCents(existing?.initialCents ?: 0L))
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER or
-                android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or
-                android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
-            maxLines = 1
-        }
-        initialLayout.addView(initialInput)
-        form.addView(initialLayout)
-
+        // ★ 表单状态提升到 Activity：点「账户类型」会往对话框栈上再压一层，
+        //   主表单在那一瞬间退出组合，状态留在 Compose 的 remember 里会被清掉。
+        val nameState = mutableStateOf(existing?.name.orEmpty())
+        val initialState = mutableStateOf(Money.formatCents(existing?.initialCents ?: 0L))
+        val typeState = mutableStateOf(existing?.type ?: AccountType.WECHAT)
         var saving = false
-        val dialog = MaterialAlertDialogBuilder(this)
-            .setTitle(if (existing == null) R.string.account_add else R.string.action_edit)
-            .setView(form)
-            .setPositiveButton(R.string.action_save, null)
-            .setNeutralButton(R.string.account_type, null)
-            .setNegativeButton(R.string.action_cancel, null)
-            .create()
 
-        dialog.setOnShowListener {
-            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_NEUTRAL)
-                .setOnClickListener {
-                    val labels = types.map { it.label }.toTypedArray()
-                    MaterialAlertDialogBuilder(this)
-                        .setTitle(R.string.account_type)
-                        .setSingleChoiceItems(labels, types.indexOf(typeHolder[0])) { picker, which ->
-                            typeHolder[0] = types[which]
-                            picker.dismiss()
-                        }
-                        .setNegativeButton(R.string.action_cancel, null)
-                        .show()
-                }
-            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener {
-                    if (saving) return@setOnClickListener
-                    val name = nameInput.text?.toString().orEmpty().trim()
-                    if (name.isEmpty()) {
-                        binding.root.snack(getString(R.string.account_need_name))
-                        return@setOnClickListener
+        dialogs.custom(
+            title = getString(if (existing == null) R.string.account_add else R.string.action_edit),
+        ) { dismiss ->
+            AccountEditorForm(
+                name = nameState.value,
+                onNameChange = { nameState.value = it },
+                initial = initialState.value,
+                onInitialChange = { initialState.value = it },
+                typeLabel = typeState.value.label,
+                onPickType = {
+                    dialogs.pickLabels(
+                        title = getString(R.string.account_type),
+                        labels = types.map { it.label },
+                        selectedIndex = types.indexOf(typeState.value),
+                        cancelText = getString(R.string.action_cancel),
+                    ) { which ->
+                        typeState.value = types[which]
                     }
-                    val initial = Money.parseYuanToCents(initialInput.text?.toString()) ?: 0L
+                },
+                onCancel = dismiss,
+                onSave = save@{
+                    if (saving) return@save
+                    val name = nameState.value.trim()
+                    if (name.isEmpty()) {
+                        snack(getString(R.string.account_need_name))
+                        return@save
+                    }
+                    val initial = Money.parseYuanToCents(initialState.value) ?: 0L
                     saving = true
                     lifecycleScope.launch {
                         try {
@@ -136,7 +149,7 @@ class AccountManageActivity : com.jizhang.app.ui.common.ThemedActivity() {
                                 appContainer.accountRepo.add(
                                     Account(
                                         name = name,
-                                        type = typeHolder[0],
+                                        type = typeState.value,
                                         initialCents = initial,
                                         sortOrder = count,
                                     ),
@@ -145,98 +158,104 @@ class AccountManageActivity : com.jizhang.app.ui.common.ThemedActivity() {
                                 appContainer.accountRepo.update(
                                     existing.copy(
                                         name = name,
-                                        type = typeHolder[0],
+                                        type = typeState.value,
                                         initialCents = initial,
                                     ),
                                 )
                             }
-                            binding.root.snack(getString(R.string.account_saved))
-                            dialog.dismiss()
+                            snack(getString(R.string.account_saved))
+                            dismiss()
                         } finally {
                             saving = false
                         }
                     }
-                }
+                },
+            )
         }
-        dialog.show()
     }
 
     private fun confirmDelete(account: Account) {
         if (account.builtin) {
-            binding.root.snack(getString(R.string.account_builtin_locked))
+            snack(getString(R.string.account_builtin_locked))
             return
         }
-        MaterialAlertDialogBuilder(this)
-            .setMessage(getString(R.string.account_delete_confirm, account.name))
-            .setPositiveButton(R.string.action_delete) { _, _ ->
-                lifecycleScope.launch {
-                    when (val result = appContainer.accountRepo.delete(account)) {
-                        DeleteResult.Deleted -> {
-                            binding.root.snack(getString(R.string.account_deleted))
-                        }
-
-                        DeleteResult.Builtin -> {
-                            binding.root.snack(getString(R.string.account_builtin_locked))
-                        }
-
-                        DeleteResult.NotFound -> {
-                            binding.root.snack(getString(R.string.delete_not_found))
-                        }
-
-                        is DeleteResult.Referenced -> {
-                            binding.root.snack(
-                                getString(R.string.account_delete_referenced, result.count),
-                            )
-                        }
-                    }
+        dialogs.confirm(
+            message = getString(R.string.account_delete_confirm, account.name),
+            confirmText = getString(R.string.action_delete),
+            cancelText = getString(R.string.action_cancel),
+        ) {
+            lifecycleScope.launch {
+                when (val result = appContainer.accountRepo.delete(account)) {
+                    DeleteResult.Deleted -> snack(getString(R.string.account_deleted))
+                    DeleteResult.Builtin -> snack(getString(R.string.account_builtin_locked))
+                    DeleteResult.NotFound -> snack(getString(R.string.delete_not_found))
+                    is DeleteResult.Referenced ->
+                        snack(getString(R.string.account_delete_referenced, result.count))
                 }
             }
-            .setNegativeButton(R.string.action_cancel, null)
-            .show()
-    }
-
-    private inner class AccountAdapter(
-        private val onEdit: (Account) -> Unit,
-        private val onDelete: (Account) -> Unit,
-    ) : ListAdapter<AccountBalance, AccountHolder>(DIFF) {
-
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): AccountHolder =
-            AccountHolder(
-                ItemAccountManageBinding.inflate(LayoutInflater.from(parent.context), parent, false),
-            )
-
-        override fun onBindViewHolder(holder: AccountHolder, position: Int) {
-            holder.bind(getItem(position), onEdit, onDelete)
         }
     }
+}
 
-    private class AccountHolder(private val binding: ItemAccountManageBinding) :
-        RecyclerView.ViewHolder(binding.root) {
-
-        fun bind(item: AccountBalance, onEdit: (Account) -> Unit, onDelete: (Account) -> Unit) {
-            val account = item.account
-            binding.initialView.text = account.name.take(1)
-            binding.nameView.text = account.name
-            binding.typeView.text = account.type.label
-            binding.balanceView.text = Money.formatCentsWithSymbol(item.cents)
-            binding.balanceView.setTextColor(
-                binding.root.context.getColor(
-                    if (item.cents < 0) R.color.expense else R.color.on_surface,
-                ),
+/**
+ * 账户编辑表单（v1.56：原为 MaterialAlertDialog + 两个 TextInputLayout）。
+ *
+ * 输入内容全部由调用方持有（见 showEditor 里的注释），这里只负责画。
+ */
+@Composable
+private fun AccountEditorForm(
+    name: String,
+    onNameChange: (String) -> Unit,
+    initial: String,
+    onInitialChange: (String) -> Unit,
+    typeLabel: String,
+    onPickType: () -> Unit,
+    onCancel: () -> Unit,
+    onSave: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        DialogTextField(
+            label = stringResource(R.string.account_name),
+            value = name,
+            onValueChange = onNameChange,
+        )
+        Spacer(Modifier.height(12.dp))
+        DialogTextField(
+            label = stringResource(R.string.account_initial),
+            value = initial,
+            onValueChange = onInitialChange,
+            keyboard = KeyboardType.Decimal,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = stringResource(R.string.account_initial_desc),
+            style = MiuixTheme.textStyles.body2.copy(fontSize = 12.sp),
+            color = themeColor(ATTR_ON_SURFACE_VARIANT),
+        )
+        Spacer(Modifier.height(20.dp))
+        DialogButton(
+            label = typeLabel,
+            primary = false,
+            onClick = onPickType,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            DialogButton(
+                label = stringResource(R.string.action_cancel),
+                primary = false,
+                onClick = onCancel,
+                modifier = Modifier.weight(1f),
             )
-            binding.editButton.setOnClickListener { onEdit(account) }
-            binding.deleteButton.setOnClickListener { onDelete(account) }
-            binding.deleteButton.alpha = if (account.builtin) 0.35f else 1f
-        }
-    }
-
-    private companion object {
-        val DIFF = object : DiffUtil.ItemCallback<AccountBalance>() {
-            override fun areItemsTheSame(oldItem: AccountBalance, newItem: AccountBalance) =
-                oldItem.account.id == newItem.account.id
-
-            override fun areContentsTheSame(oldItem: AccountBalance, newItem: AccountBalance) =
-                oldItem == newItem
+            DialogButton(
+                label = stringResource(R.string.action_save),
+                primary = true,
+                onClick = onSave,
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }

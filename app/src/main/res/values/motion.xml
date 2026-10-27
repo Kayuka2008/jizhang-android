@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="ThemeOverlay.Jizhang.SecondaryTransitions" parent="">
+        <item name="android:windowAnimationStyle">@style/Animation.Jizhang.Secondary</item>
+    </style>
+    <style name="Animation.Jizhang.Secondary" parent="@android:style/Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@anim/secondary_enter</item>
+        <item name="android:activityOpenExitAnimation">@anim/secondary_hold</item>
+        <item name="android:activityCloseEnterAnimation">@anim/secondary_hold</item>
+        <item name="android:activityCloseExitAnimation">@anim/secondary_exit</item>
+    </style>
+</resources>

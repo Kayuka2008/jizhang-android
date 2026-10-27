@@ -25,14 +25,15 @@
         android:clipChildren="false" />
 
     <!--
-        状态栏磨砂遮罩。放在最后 = 层级最上，只盖住状态栏那一条（高度 = 状态栏 + 18dp），
-        不参与测量也不给内容留白，所以不会影响任何页面的排版。
+        状态栏玻璃**不在这里声明**。
+
+        v1.27 起它由 ThemedActivity 在 onContentChanged() 里统一装到
+        android.R.id.content 上（所有页面都有，不用逐页写 XML）。
+
+        关键原因：inset 补在**内容根**上，而玻璃是内容根的**兄弟**节点 ——
+        如果它写在这里（rootLayout 的子节点），那层状态栏高度的内边距会把它
+        一起推到状态栏下面去，玻璃就落在了错误的位置。
+        详见 ThemedActivity 的类注释与 GlassStatusBarHost.kt。
     -->
-    <com.jizhang.app.ui.glass.GlassStatusBarHost
-        android:id="@+id/glassStatusBar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top"
-        android:clipChildren="false" />
 
 </FrameLayout>

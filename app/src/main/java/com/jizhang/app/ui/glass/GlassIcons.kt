@@ -18,7 +18,7 @@ import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
 /**
- * 与现有 `res/drawable/ic_nav_*.xml` 对应的 Compose 矢量图。
+ * 页签使用的 Compose 矢量图，替代原来的 XML 导航图标。
  * 使用 ImageVector 而不是额外引入 material-icons 依赖，避免拉入未缓存的包。
  */
 internal val IconLedger: ImageVector by lazy {
@@ -328,27 +328,6 @@ private fun androidx.compose.ui.graphics.vector.PathBuilder.settingsGear() {
     curveToRelative(1.93f, 0f, 3.5f, 1.57f, 3.5f, 3.5f)
     curveToRelative(0f, 1.93f, -1.57f, 3.5f, -3.5f, 3.5f)
     close()
-}
-
-/** 对应 res/drawable/ic_add.xml（Material 标准 add 图标）。 */
-internal val IconAdd: ImageVector by lazy {
-    icon("Add") {
-        path(fill = SolidColor(Color.Black)) {
-            moveTo(19f, 13f)
-            horizontalLineToRelative(-6f)
-            verticalLineToRelative(6f)
-            horizontalLineToRelative(-2f)
-            verticalLineToRelative(-6f)
-            horizontalLineToRelative(-6f)
-            verticalLineToRelative(-2f)
-            horizontalLineToRelative(6f)
-            verticalLineTo(5f)
-            horizontalLineToRelative(2f)
-            verticalLineToRelative(6f)
-            horizontalLineToRelative(6f)
-            close()
-        }
-    }
 }
 
 /**

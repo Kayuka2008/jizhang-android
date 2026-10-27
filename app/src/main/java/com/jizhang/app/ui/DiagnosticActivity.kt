@@ -4,21 +4,19 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
-import androidx.recyclerview.widget.DiffUtil
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.ListAdapter
-import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.jizhang.app.ui.common.JizhangDialogHost
+import com.jizhang.app.ui.common.JizhangDialogHostView
+import com.jizhang.app.ui.common.JizhangSnackbarHost
+import com.jizhang.app.ui.common.JizhangSnackbarHostView
+import com.jizhang.app.ui.common.secondaryComposeRoot
 import com.jizhang.app.R
 import com.jizhang.app.data.db.entity.NotificationLog
-import com.jizhang.app.databinding.ActivityDiagnosticBinding
-import com.jizhang.app.databinding.ItemNotificationLogBinding
 import com.jizhang.app.ui.common.appContainer
-import com.jizhang.app.ui.common.snack
+import com.jizhang.app.ui.diagnostic.DiagLogRow
+import com.jizhang.app.ui.diagnostic.DiagnosticScreen
 import com.jizhang.app.util.Dates
 import kotlinx.coroutines.launch
 import java.time.format.DateTimeFormatter
@@ -26,97 +24,85 @@ import java.time.format.DateTimeFormatter
 /**
  * 通知诊断页。
  * 识别规则对不上时，用户可在这里复制微信原始通知文本反馈，以便调整规则。
+ *
+ * v1.53：视图层改成 Compose + miuix（原 activity_diagnostic.xml / item_notification_log.xml /
+ * 内嵌 LogAdapter 全删）。Activity 仍是**宿主 + 业务**：观察日志流、拼复制文本、
+ * 清空确认框、snackbar 全部留在原处，Compose 侧只拿到一条列表与两个回调。
+ *
+ * ★ RecyclerView 的 DiffUtil 由 LazyColumn 的 key 取代 —— id 稳定即天然去重。
+ * ★ 系统栏高度在这里订阅后推进 state（绝不在组合体里现读，见 v1.45 的坑）。
  */
-class DiagnosticActivity : com.jizhang.app.ui.common.ThemedActivity() {
+class DiagnosticActivity : com.jizhang.app.ui.common.SecondaryActivity() {
 
-    private lateinit var binding: ActivityDiagnosticBinding
-    private lateinit var adapter: LogAdapter
+
+    private val logs = mutableStateOf<List<DiagLogRow>>(emptyList())
+
+    /** 统一对话框宿主（v1.56）：挂进下面那棵 Compose 树。 */
+    private val dialogs = JizhangDialogHost()
+
+    /** 统一提示条宿主（v1.60）。 */
+    private val snackbar = JizhangSnackbarHost()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityDiagnosticBinding.inflate(layoutInflater)
-        setContentView(binding.root)
 
-        binding.toolbar.setNavigationOnClickListener { finish() }
-        binding.clearButton.setOnClickListener {
-            MaterialAlertDialogBuilder(this)
-                .setMessage(R.string.diag_clear_question)
-                .setPositiveButton(R.string.action_delete) { _, _ ->
-                    lifecycleScope.launch { appContainer.pendingRepo.clearLogs() }
-                }
-                .setNegativeButton(R.string.action_cancel, null)
-                .show()
+        val root = secondaryComposeRoot {
+                DiagnosticScreen(
+                    logs = logs.value,
+                    onBack = { finish() },
+                    onCopy = { copy(it) },
+                    onClearAll = { confirmClear() },
+                )
+                JizhangDialogHostView(dialogs)
+                JizhangSnackbarHostView(snackbar)
         }
+        setContentView(root)
+    }
 
-        adapter = LogAdapter { log -> copy(log) }
-        binding.list.layoutManager = LinearLayoutManager(this)
-        binding.list.adapter = adapter
-
+    override fun onStart() {
+        super.onStart()
         lifecycleScope.launch {
-            appContainer.pendingRepo.observeLogs().collect { logs ->
-                adapter.submitList(logs)
-                binding.emptyView.visibility = if (logs.isEmpty()) View.VISIBLE else View.GONE
-                binding.list.visibility = if (logs.isEmpty()) View.GONE else View.VISIBLE
+            appContainer.pendingRepo.observeLogs().collect { list ->
+                logs.value = list.map(::toRow)
             }
         }
     }
 
-    private fun copy(log: NotificationLog) {
+    private fun toRow(log: NotificationLog) = DiagLogRow(
+        id = log.id,
+        packageName = log.packageName,
+        timeText = Dates.fromEpochMillis(log.capturedAt).format(TIME_FORMAT),
+        title = log.title.orEmpty(),
+        text = log.text.orEmpty(),
+        recognized = log.recognized,
+        matchedRule = log.matchedRule,
+    )
+
+    /** 复制给用户手动发出去的完整文本（与旧版逐行一致）。 */
+    private fun copy(row: DiagLogRow) {
         val text = buildString {
-            appendLine("时间：${Dates.fromEpochMillis(log.capturedAt).format(TIME_FORMAT)}")
-            appendLine("包名：${log.packageName}")
-            appendLine("标题：${log.title.orEmpty()}")
-            appendLine("正文：${log.text.orEmpty()}")
-            append("规则：${log.matchedRule ?: "未匹配"}")
+            appendLine("时间：${row.timeText}")
+            appendLine("包名：${row.packageName}")
+            appendLine("标题：${row.title}")
+            appendLine("正文：${row.text}")
+            append("规则：${row.matchedRule ?: "未匹配"}")
         }
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("微信通知", text))
-        binding.root.snack(getString(R.string.diag_copied))
+        snackbar.show(getString(R.string.diag_copied))
     }
 
-    private inner class LogAdapter(
-        private val onCopy: (NotificationLog) -> Unit,
-    ) : ListAdapter<NotificationLog, LogHolder>(DIFF) {
-
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): LogHolder =
-            LogHolder(
-                ItemNotificationLogBinding.inflate(LayoutInflater.from(parent.context), parent, false),
-            )
-
-        override fun onBindViewHolder(holder: LogHolder, position: Int) {
-            holder.bind(getItem(position), onCopy)
-        }
-    }
-
-    private class LogHolder(private val binding: ItemNotificationLogBinding) :
-        RecyclerView.ViewHolder(binding.root) {
-
-        fun bind(log: NotificationLog, onCopy: (NotificationLog) -> Unit) {
-            binding.timeView.text = Dates.fromEpochMillis(log.capturedAt).format(TIME_FORMAT)
-            binding.titleView.text = log.title.orEmpty()
-            binding.textView.text = log.text.orEmpty()
-            binding.statusView.setText(
-                if (log.recognized) R.string.diag_recognized else R.string.diag_unrecognized,
-            )
-            binding.statusView.setTextColor(
-                binding.root.context.getColor(
-                    if (log.recognized) R.color.income else R.color.on_surface_variant,
-                ),
-            )
-            binding.ruleView.text = log.matchedRule?.let { "规则：$it" } ?: "未匹配规则"
-            binding.copyButton.setOnClickListener { onCopy(log) }
+    private fun confirmClear() {
+        dialogs.confirm(
+            message = getString(R.string.diag_clear_question),
+            confirmText = getString(R.string.action_delete),
+            cancelText = getString(R.string.action_cancel),
+        ) {
+            lifecycleScope.launch { appContainer.pendingRepo.clearLogs() }
         }
     }
 
     private companion object {
         val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-
-        val DIFF = object : DiffUtil.ItemCallback<NotificationLog>() {
-            override fun areItemsTheSame(oldItem: NotificationLog, newItem: NotificationLog) =
-                oldItem.id == newItem.id
-
-            override fun areContentsTheSame(oldItem: NotificationLog, newItem: NotificationLog) =
-                oldItem == newItem
-        }
     }
 }
